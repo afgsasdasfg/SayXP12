@@ -1,0 +1,50 @@
+# SayXP12 configuration. Secrets (GEMINI_API_KEY) go to .env, not here.
+
+[xplane]
+# Leave empty to read %LOCALAPPDATA%\x-plane_install_12.txt
+root = ""
+host = "localhost"
+port = 8086
+
+[flight]
+callsign = "DLH4AB"          # ICAO callsign or registration ("N123AB", "C-GTLT")
+telephony = ""               # override spoken prefix, e.g. "Lufthansa"; empty = automatic
+departure = ""               # ICAO; empty = nearest airport to the aircraft
+destination = ""             # ICAO; empty = ask / take from pilot's clearance request
+cruise_ft = 35000
+initial_alt_ft = 5000
+sid = ""                     # force a SID; empty = pick by first_fix from CIFP or radar vectors
+first_fix = ""               # first enroute fix, used to choose the SID
+arrival_gate = ""
+
+[atc]
+region = "ICAO"              # ICAO | FAA phraseology
+transition_alt = 5000
+handoff_departure_agl = 1000 # tower -> departure above this AGL
+handoff_center_ft = 10000    # departure -> center above this altitude
+center_khz = 127900          # no center data in apt.dat yet (stage 2)
+strict_readback = false      # true = every item of a clearance must be read back
+require_tuned = true         # only hear ATC on a frequency tuned in COM1/COM2
+
+[voice]
+ptt_key = "ctrl_r"           # pynput key name; also X-Plane command sim/operation/contact_atc
+input_device = ""            # sounddevice name/index; empty = default
+whisper_model = "small.en"   # tiny.en / base.en / small.en / medium.en
+whisper_device = "auto"      # auto | cuda | cpu
+radio_effect = true
+speech_rate = 0.9            # Piper length_scale (<1 faster)
+
+[voice.voices]               # Piper voice per position (downloaded on first use)
+Delivery = "en_US-amy-medium"
+Ground = "en_US-ryan-medium"
+Tower = "en_US-lessac-medium"
+Departure = "en_GB-alan-medium"
+Approach = "en_GB-alan-medium"
+Center = "en_US-joe-medium"
+
+[llm]
+provider = "gemini"          # gemini | ollama | rules (no LLM, regex parser)
+gemini_model = "gemini-2.5-flash"
+ollama_model = "qwen2.5:7b"
+ollama_host = "http://localhost:11434"
+timeout_s = 10
