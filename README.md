@@ -52,7 +52,7 @@ Without a key the app prints "LLM disabled" and runs on rules only.
 Pick a model by measurement (accuracy / latency / RUB per flight on 30 pilot phrases):
 
 ```bash
-.venv\Scripts\python tools\bench_llm.py gpt-5-nano:10:80:minimal gpt-6-luna:20:100:minimal
+.venv\Scripts\python tools\bench_llm.py gpt-6-luna:20:100:none gpt-5-nano:10:80:minimal
 ```
 
 (`name:input RUB per 1M:output RUB per 1M:reasoning_effort`; take the prices from the model's

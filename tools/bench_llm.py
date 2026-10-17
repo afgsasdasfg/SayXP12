@@ -78,18 +78,20 @@ def slot_ok(got: dict, want: dict) -> bool:
 
 async def bench(spec: str, cfg: dict) -> None:
     name, *rest = spec.split(":")
-    pin = float(rest[0]) if len(rest) > 0 else None
-    pout = float(rest[1]) if len(rest) > 1 else None
-    effort = rest[2] if len(rest) > 2 else (cfg.get("reasoning_effort") or None)
+    pin = float(rest[0]) if len(rest) > 0 and rest[0] else None
+    pout = float(rest[1]) if len(rest) > 1 and rest[1] else None
+    # explicit (possibly empty = none) in the spec, else the config value
+    effort = (rest[2] or None) if len(rest) > 2 else (None if rest else cfg.get("reasoning_effort") or None)
     llm = OpenAICompatLLM(name, cfg.get("base_url", "https://api.aitunnel.ru/v1"),
                           cfg.get("api_key_env", "OPENAI_API_KEY"), timeout=30, reasoning_effort=effort)
     p = IntentParser(llm, mode="always")
     lat, tin, tout, ok_int, ok_slot, errors = [], 0, 0, 0, 0, 0
     print(f"\n=== {name} (reasoning_effort={effort}) ===")
     for text, want_intent, want_slots in CASES:
+        await asyncio.sleep(1.0)  # stay under the provider's rate limit
         t0 = time.perf_counter()
         try:
-            it = await p.parse_llm(text, CTX)
+            it = await p.parse_llm(text, CTX, fallback=False)  # errors count, no rules rescue
         except LLMError as e:
             errors += 1
             print(f"  ERR  {text[:50]!r}: {e}")

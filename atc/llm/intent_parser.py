@@ -227,12 +227,14 @@ class IntentParser:
             log.info("rules could not classify, asking LLM")
         return await self.parse_llm(text, context)
 
-    async def parse_llm(self, text: str, context: dict) -> PilotIntent:
+    async def parse_llm(self, text: str, context: dict, fallback: bool = True) -> PilotIntent:
         user = (f"Context: {json.dumps(context)}\n"
                 f"Pilot transmission: \"{text}\"")
         try:
             obj = await self.llm.complete_json(SYSTEM_PROMPT, user)
         except LLMError as e:
+            if not fallback:
+                raise
             log.warning("LLM failed (%s), falling back to rules", e)
             return self.parse_rules(text)
         log.info("LLM JSON: %s", json.dumps(obj))
