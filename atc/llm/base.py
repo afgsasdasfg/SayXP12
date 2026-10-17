@@ -34,8 +34,16 @@ def parse_json_loose(text: str) -> dict:
 
 
 def make_llm(cfg: dict) -> LLM | None:
-    """cfg = [llm] section. provider: gemini | ollama | rules (no LLM)."""
+    """cfg = [llm] section. provider: openai | gemini | ollama | rules (no LLM)."""
     provider = (cfg.get("provider") or "rules").lower()
+    if provider == "openai":
+        from .openai_compat import OpenAICompatLLM
+        return OpenAICompatLLM(model=cfg.get("model", "gpt-5-nano"),
+                               base_url=cfg.get("base_url", "https://api.aitunnel.ru/v1"),
+                               api_key_env=cfg.get("api_key_env", "OPENAI_API_KEY"),
+                               timeout=cfg.get("timeout_s", 10),
+                               reasoning_effort=cfg.get("reasoning_effort") or None,
+                               temperature=cfg.get("temperature"))
     if provider == "gemini":
         from .gemini import GeminiLLM
         return GeminiLLM(model=cfg.get("gemini_model", "gemini-2.5-flash"),

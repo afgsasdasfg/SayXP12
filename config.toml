@@ -43,7 +43,13 @@ Approach = "en_GB-alan-medium"
 Center = "en_US-joe-medium"
 
 [llm]
-provider = "gemini"          # gemini | ollama | rules (no LLM, regex parser)
+provider = "openai"          # openai (any OpenAI-compatible API) | gemini | ollama | rules (no LLM)
+mode = "fallback"            # fallback: rules first, LLM only if rules don't understand | always
+# OpenAI-compatible API (AITUNNEL by default); key goes to .env as OPENAI_API_KEY=...
+base_url = "https://api.aitunnel.ru/v1"
+model = "gpt-5-nano"
+api_key_env = "OPENAI_API_KEY"
+reasoning_effort = "minimal" # for reasoning models (gpt-5*); "" for models without it
 gemini_model = "gemini-2.5-flash"
 ollama_model = "qwen2.5:7b"
 ollama_host = "http://localhost:11434"

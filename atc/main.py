@@ -90,7 +90,7 @@ class App:
         except LLMError as e:
             print(f"LLM disabled ({e}); using the rule-based parser")
             llm = None
-        self.parser = IntentParser(llm)
+        self.parser = IntentParser(llm, cfg.get("llm", {}).get("mode", "fallback"))
         self.brain: Brain | None = None
         self.monitor: Monitor | None = None
 

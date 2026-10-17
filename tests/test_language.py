@@ -65,15 +65,32 @@ class FakeLLM(LLM):
 
 def test_llm_parser_merges_and_validates():
     llm = FakeLLM({"intent": "readback", "callsign": "DLH4AB", "readback": {"squawk": "4521", "runway": "RWY 15"}})
-    it = asyncio.run(IntentParser(llm).parse("squawk 4521 runway 15 climb 5000", {}))
+    it = asyncio.run(IntentParser(llm, mode="always").parse("squawk 4521 runway 15 climb 5000", {}))
     assert it.intent == "readback"
     assert it.readback["runway"] == "15" and it.readback["altitude"] == 5000  # regex filled the gap
 
-    it = asyncio.run(IntentParser(FakeLLM({"intent": "make_coffee"})).parse("hello", {}))
+    it = asyncio.run(IntentParser(FakeLLM({"intent": "make_coffee"}), mode="always").parse("hello", {}))
     assert it.unclear
 
-    it = asyncio.run(IntentParser(FakeLLM(LLMError("down"))).parse("request taxi", {}))
+    it = asyncio.run(IntentParser(FakeLLM(LLMError("down")), mode="always").parse("request taxi", {}))
     assert it.intent == "request_taxi"  # fallback to rules
+
+
+class CountingLLM(FakeLLM):
+    calls = 0
+
+    async def complete_json(self, system, user):
+        CountingLLM.calls += 1
+        return self.reply
+
+
+def test_hybrid_mode_only_calls_llm_when_rules_fail():
+    llm = CountingLLM({"intent": "request_taxi", "readback": {}})
+    p = IntentParser(llm)  # default mode = fallback
+    assert asyncio.run(p.parse("ground DLH4AB request taxi", {})).intent == "request_taxi"
+    assert CountingLLM.calls == 0
+    assert asyncio.run(p.parse("we'd like to get moving to the runway please", {})).intent == "request_taxi"
+    assert CountingLLM.calls == 1
 
 
 def test_parse_json_loose():

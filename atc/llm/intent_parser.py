@@ -198,8 +198,12 @@ def _norm_value(slot: str, v):
 
 
 class IntentParser:
-    def __init__(self, llm: LLM | None = None):
+    """mode "fallback": rules first, the LLM only for calls the rules can't classify
+    (instant and nearly free for standard phraseology); mode "always": LLM for every call."""
+
+    def __init__(self, llm: LLM | None = None, mode: str = "fallback"):
         self.llm = llm
+        self.mode = mode
 
     def parse_rules(self, text: str) -> PilotIntent:
         intent = classify_rules(text)
@@ -216,6 +220,14 @@ class IntentParser:
             return PilotIntent(intent="other", unclear=True, raw_text=text)
         if self.llm is None:
             return self.parse_rules(text)
+        if self.mode == "fallback":
+            ruled = self.parse_rules(text)
+            if ruled.intent != "other":
+                return ruled
+            log.info("rules could not classify, asking LLM")
+        return await self.parse_llm(text, context)
+
+    async def parse_llm(self, text: str, context: dict) -> PilotIntent:
         user = (f"Context: {json.dumps(context)}\n"
                 f"Pilot transmission: \"{text}\"")
         try:

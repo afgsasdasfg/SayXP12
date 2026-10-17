@@ -39,8 +39,24 @@ incoming traffic must not be disabled.
 
 LLM (optional, the rule-based parser works without one):
 
-- **Gemini**: create `.env` with `GEMINI_API_KEY=...` (free tier; limits change and free-tier
-  prompts may be used for training).
+- **OpenAI-compatible API** (default, `provider = "openai"`): AITUNNEL (`api.aitunnel.ru/v1`,
+  pay in RUB, works from Russia), OpenRouter, DeepSeek, etc. Create `.env` with
+  `OPENAI_API_KEY=...`; set `base_url` / `model` in `config.toml`. For reasoning models (gpt-5*)
+  keep `reasoning_effort = "minimal"`, otherwise hidden reasoning tokens cost money and latency.
+- **Gemini**: `GEMINI_API_KEY=...` in `.env` (not available from Russia).
+
+`mode = "fallback"` (default) sends a call to the LLM only when the rule-based parser can't
+classify it, so standard phraseology is answered instantly and almost nothing is billed.
+Without a key the app prints "LLM disabled" and runs on rules only.
+
+Pick a model by measurement (accuracy / latency / RUB per flight on 30 pilot phrases):
+
+```bash
+.venv\Scripts\python tools\bench_llm.py gpt-5-nano:10:80:minimal gpt-6-luna:20:100:minimal
+```
+
+(`name:input RUB per 1M:output RUB per 1M:reasoning_effort`; take the prices from the model's
+own page, the catalog list shows the discounted cache price.)
 - **Ollama**: `ollama pull qwen2.5:7b`, then set `provider = "ollama"` in `config.toml`.
 - **rules**: no LLM, regex parser.
 
