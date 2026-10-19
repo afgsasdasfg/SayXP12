@@ -24,6 +24,7 @@ handoff_departure_agl = 1000 # tower -> departure above this AGL
 handoff_center_ft = 10000    # departure -> center above this altitude
 center_khz = 127900          # no center data in apt.dat yet (stage 2)
 strict_readback = false      # true = every item of a clearance must be read back
+confirm_readback = false     # true = ATC answers a correct readback with "readback correct"
 require_tuned = true         # only hear ATC on a frequency tuned in COM1/COM2
 
 [voice]

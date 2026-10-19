@@ -17,6 +17,7 @@ NO_READBACK_S = 10.0
 MAX_REPEATS = 2
 HOLD_HANDOFF_M = 70.0
 CROSSING_CLEARANCE_M = 120.0
+TAXI_SPEED_KT = 30.0
 ROUTE_JOIN_M = 25.0
 ROUTE_LOST_M = 60.0
 ALT_DEV_FT = 300.0
@@ -26,6 +27,7 @@ class Monitor:
     def __init__(self, brain: Brain):
         self.b = brain
         self._last: dict[str, float] = {}
+        self._fast_ticks = 0
 
     def _ready(self, rule: str, cooldown: float) -> bool:
         now = time.time()
@@ -40,6 +42,7 @@ class Monitor:
         out: list[Transmission] = []
         for rule in (self._no_readback, self._handoff_departure, self._handoff_center,
                      self._hold_short_handoff, self._runway_incursion, self._route_deviation,
+                     self._taxi_speed,
                      self._altitude_deviation, self._runway_vacated):
             try:
                 out += rule(s)
@@ -138,6 +141,17 @@ class Monitor:
         if b.route_joined and d > ROUTE_LOST_M and self._ready("missed_turn", 60):
             return [b._tx(Position.GROUND, b.phr.missed_turn())]
         return []
+
+    def _taxi_speed(self, s: SimState) -> list[Transmission]:
+        """More than TAXI_SPEED_KT for a few seconds on taxiways (not on a runway)."""
+        b = self.b
+        fast = (b.phase in (Phase.TAXI_OUT, Phase.TAXI_IN, Phase.PUSH_START, Phase.CLEARANCE)
+                and s.on_ground and s.groundspeed_kt > TAXI_SPEED_KT
+                and on_runway(b.field, s.lat, s.lon) is None)
+        self._fast_ticks = self._fast_ticks + 1 if fast else 0
+        if self._fast_ticks < 3 or not self._ready("taxi_speed", 60):
+            return []
+        return [b._tx(Position.GROUND, b.phr.reduce_taxi_speed())]
 
     def _altitude_deviation(self, s: SimState) -> list[Transmission]:
         b = self.b

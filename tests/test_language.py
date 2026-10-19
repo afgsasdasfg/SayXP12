@@ -47,6 +47,9 @@ def test_normalize_and_slots():
     assert s["hold_short"] == "15" and s["taxiways"] == ["G", "M"]
     assert extract_slots("flight level three five zero")["flight_level"] == 350
     assert extract_slots("hold short runway two seven left")["hold_short"] == "27L"
+    # real Whisper output from the live test
+    assert extract_slots("Climb, flight level, 1, 0, 0. Lufthansa four Alpha Bravo.")["flight_level"] == 100
+    assert extract_slots("Lufthansa four Alpha Bravo, run tower on 011, 8 decimals free, thank you.")["frequency"] == "118.3"
 
 
 def test_rule_classifier():

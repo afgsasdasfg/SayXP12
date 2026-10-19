@@ -327,6 +327,9 @@ class Phraseology:
         return self._out(f"STOP immediately, hold position, you are not cleared onto runway {runway_end}",
                          f"stop immediately, hold position, you are not cleared onto runway {runway(runway_end)}")
 
+    def reduce_taxi_speed(self) -> tuple[str, str]:
+        return self._out("reduce taxi speed", "reduce taxi speed")
+
     def missed_turn(self) -> tuple[str, str]:
         return self._out("it appears you missed your turn, hold position and advise",
                          "it appears you missed your turn, hold position and advise")

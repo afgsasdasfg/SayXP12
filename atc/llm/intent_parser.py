@@ -56,7 +56,7 @@ A transmission that repeats an ATC instruction is "readback" even if it also con
     json.dumps(INTENTS),)
 
 WORD_DIGITS = {
-    "zero": "0", "one": "1", "two": "2", "three": "3", "tree": "3", "four": "4", "fower": "4",
+    "zero": "0", "one": "1", "two": "2", "three": "3", "tree": "3", "free": "3", "four": "4", "fower": "4",
     "five": "5", "fife": "5", "six": "6", "seven": "7", "eight": "8", "nine": "9", "niner": "9",
 }
 NATO_WORDS = {
@@ -73,6 +73,8 @@ def normalize(text: str) -> str:
     """Lowercase, spoken digits -> digits, digit runs joined, 'thousand' expanded."""
     t = text.lower().replace(",", " ").replace("-", " ")
     t = re.sub(r"[^\w\s\.]", " ", t)
+    t = re.sub(r"\.(?!\d)", " ", t)  # sentence dots: "flight level 1 0 0." must not stop the digit join
+    t = re.sub(r"\bdecimals\b", "decimal", t)
     words = [WORD_DIGITS.get(w, w) for w in t.split()]
     out: list[str] = []
     for w in words:  # join single digits said one by one: "1 5" -> "15"
@@ -142,7 +144,7 @@ def extract_slots(text: str) -> dict:
         s["altitude"] = int(m.group(1))
     elif m := re.search(r"\b(\d{3,5}) (?:feet|ft)\b", t):
         s["altitude"] = int(m.group(1))
-    if m := re.search(r"\b(1[1-3]\d\.\d{1,3})\b", t):
+    if m := re.search(r"\b0?(1[1-3]\d\.\d{1,3})\b", t):  # Whisper: "011 8 decimals free" -> 0118.3
         s["frequency"] = m.group(1)
     elif m := re.search(r"\b([1-3]\d\.\d{1,3})\b", t):
         s["frequency"] = "1" + m.group(1)  # Whisper drops the leading "one": "26 decimal 3"

@@ -164,6 +164,20 @@ def test_snapshot_restore_and_skip_clearance(kbtv):
     assert (b2.phase, b2.squawk, b2.runway, b2.fc.destination) == (Phase.CLEARANCE, b.squawk, b.runway, "KBOS")
 
 
+def test_taxi_overspeed_and_confirm_readback(kbtv):
+    b = Brain(FlightConfig(callsign="DLH4AB", confirm_readback=True), kbtv)
+    m = Monitor(b)
+    p = IntentParser()
+    gate = next(g for g in kbtv.gates if g.name == "1")
+    b.phase = Phase.CLEARANCE
+    say(b, p, "request taxi", sim_at(gate.lat, gate.lon, 126300))
+    out = say(b, p, "via golf mike hold short runway 15", sim_at(gate.lat, gate.lon, 126300))
+    assert out[0].text == "DLH4AB, readback correct"
+    fast = sim_at(gate.lat, gate.lon, 126300, groundspeed_kt=40)
+    said = [t.text for _ in range(3) for t in m._taxi_speed(fast)]
+    assert said == ["DLH4AB, reduce taxi speed"]
+
+
 def test_unknown_destination_is_rejected(kbtv):
     class FakeIndex:
         entries = {"KBOS": (), "KBTV": ()}

@@ -82,6 +82,7 @@ class Transmission:
     expects_readback: bool = False
     freq_khz: int = 0
     t: float = field(default_factory=time.time)
+    proactive: bool = False   # ATC-initiated (monitor), not an answer to the pilot
 
 
 @dataclass

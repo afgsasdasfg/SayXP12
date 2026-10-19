@@ -61,6 +61,7 @@ def flight_config(cfg: dict) -> FlightConfig:
         center_khz=int(atc.get("center_khz", 127900)), region=atc.get("region", "ICAO"),
         transition_alt=int(atc.get("transition_alt", 5000)),
         strict_readback=bool(atc.get("strict_readback", False)),
+        confirm_readback=bool(atc.get("confirm_readback", False)),
     )
 
 
@@ -169,7 +170,8 @@ class App:
     async def speaker(self) -> None:
         while True:
             tx = await self.queue.get()
-            while self.ptt_down:  # never talk over the pilot
+            # never talk over the pilot; ATC-initiated calls also wait out a sim pause
+            while self.ptt_down or (tx.proactive and self.link.state().paused):
                 await asyncio.sleep(0.1)
             await asyncio.sleep(0.6)  # natural gap after the pilot's call
             s = self.link.state()
@@ -188,12 +190,18 @@ class App:
                 self.brain.pending.t = time.time()  # readback timer starts after we finish talking
 
     async def monitor_loop(self) -> None:
+        last = time.time()
         while True:
             await asyncio.sleep(1.0)
+            now, dt = time.time(), time.time() - last
+            last = now
             s = self.link.state()
+            if s.paused and self.brain.pending:
+                self.brain.pending.t += dt  # the "no readback" clock stops while the sim is paused
             if s.paused or self.speaking or self.ptt_down or self.pilot_busy:
                 continue
             for tx in self.monitor.tick(s):
+                tx.proactive = True
                 await self.queue.put(tx)
             self._save_state()
 

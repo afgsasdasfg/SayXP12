@@ -55,6 +55,7 @@ class FlightConfig:
     region: str = "ICAO"
     transition_alt: int = 5000
     strict_readback: bool = False
+    confirm_readback: bool = False   # say "readback correct" (real ATC is usually silent)
     arrival_gate: str | None = None
 
 
@@ -180,9 +181,13 @@ class Brain:
         twys = sorted({e.name for e in ap.edges if e.name and e.kind == "taxiway"})[:30]
         stations = ", ".join(self.station_name(p) for p in
                              (Position.DELIVERY, Position.GROUND, Position.TOWER, Position.DEPARTURE))
+        from ..phraseology import taxiway as spoken_twy
+        # taxiways as they are said ("Golf, Mike"): Whisper heard "G M" as "go with mic"
+        twys_spoken = ", ".join(spoken_twy(t) for t in twys)
         return (f"{stations}, good day, {self.phr.cs_spoken}, radio check. {ap.icao} {ap.name}. Runway "
                 + ", ".join(e.name for r in ap.runways for e in r.ends)
-                + ". Taxiways " + ", ".join(twys) + ". Squawk, QNH, flight level, cleared, readback.")
+                + f". Taxi via {twys_spoken}, hold short. Squawk, QNH, flight level, cleared, readback, "
+                  "decimal, request IFR clearance.")
 
     # --------------------------------------------------------------- readbacks
     def _check_readback(self, intent: PilotIntent) -> list[Transmission]:
@@ -205,6 +210,8 @@ class Brain:
             return [self._tx(p.position, self.phr.readback_wrong(wrong), True)]
         self.pending = None
         out = p.on_ok() if p.on_ok else []
+        if not out and self.fc.confirm_readback:
+            out = [self._tx(p.position, self.phr.readback_correct())]
         return out
 
     @staticmethod
