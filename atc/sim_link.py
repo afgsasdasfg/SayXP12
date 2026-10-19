@@ -101,12 +101,18 @@ class SimLink:
     # ---------- REST ----------
     async def _resolve(self, client: httpx.AsyncClient) -> None:
         self._ids.clear()
+        missing = []
         for name, (fld, _) in DATAREFS.items():
             r = await client.get(f"{self.rest}/datarefs", params={"filter[name]": name})
             if r.status_code != 200:
-                log.warning("dataref missing in sim: %s", name)
+                missing.append(name)
                 continue
             self._ids[r.json()["data"][0]["id"]] = fld
+        if "lat" not in self._ids.values():
+            # X-Plane answers before a flight is loaded (or with incoming traffic disabled -> 403)
+            raise ConnectionError(f"X-Plane not ready (HTTP {r.status_code}); still loading a flight?")
+        for name in missing:
+            log.warning("dataref missing in sim: %s", name)
         self._cmd_ids.clear()
         for name in self.watch_commands:
             r = await client.get(f"{self.rest}/commands", params={"filter[name]": name})
@@ -116,7 +122,7 @@ class SimLink:
                 self._name_to_cmd[name] = cid
 
     async def capabilities(self) -> dict:
-        async with httpx.AsyncClient(timeout=3) as c:
+        async with httpx.AsyncClient(timeout=3, trust_env=False) as c:
             r = await c.get(self.rest.rsplit("/", 1)[0] + "/capabilities")
             r.raise_for_status()
             return r.json()
@@ -163,9 +169,11 @@ class SimLink:
         """Connect and keep streaming; reconnects if X-Plane restarts."""
         while True:
             try:
-                async with httpx.AsyncClient(timeout=5) as client:
+                # trust_env=False / proxy=None: X-Plane is local; a system proxy (VPN client)
+                # would otherwise swallow localhost requests and answer 503
+                async with httpx.AsyncClient(timeout=5, trust_env=False) as client:
                     await self._resolve(client)
-                async with websockets.connect(self.ws_url, max_size=None) as ws:
+                async with websockets.connect(self.ws_url, max_size=None, proxy=None) as ws:
                     self._ws = ws
                     await self._subscribe()
                     self.connected = True
