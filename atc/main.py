@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
 import threading
@@ -20,10 +21,13 @@ from .brain.monitor import Monitor
 from .llm.base import LLMError, make_llm
 from .llm.intent_parser import IntentParser
 from .sim_link import SimLink
-from .state import Transmission
+from .state import Phase, Transmission
 from .world.aptdat import AptIndex, default_xp_root
 
 log = logging.getLogger("main")
+
+STATE_FILE = Path("cache") / "flight_state.json"
+RESUME_MAX_AGE_S = 3 * 3600
 
 
 def load_config(path: str) -> dict:
@@ -61,9 +65,13 @@ def flight_config(cfg: dict) -> FlightConfig:
 
 
 class App:
-    def __init__(self, cfg: dict, text_mode: bool, tts_on: bool):
+    def __init__(self, cfg: dict, text_mode: bool, tts_on: bool, fresh: bool = False,
+                 skip_clearance: bool = False):
         self.cfg = cfg
         self.text_mode = text_mode
+        self.fresh = fresh
+        self.skip_clearance = skip_clearance
+        self._last_snap: dict | None = None
         self.loop: asyncio.AbstractEventLoop | None = None
         self.queue: asyncio.Queue[Transmission] = asyncio.Queue()
         self.ptt_down = False
@@ -130,6 +138,32 @@ class App:
         log.info("intent: %s", intent)
         for tx in self.brain.handle(intent, s):
             await self.queue.put(tx)
+        self._save_state()
+
+    # ------------------------------------------------------------ persistence
+    def _save_state(self) -> None:
+        snap = self.brain.snapshot()
+        if snap == self._last_snap:
+            return
+        self._last_snap = snap
+        try:
+            STATE_FILE.parent.mkdir(exist_ok=True)
+            STATE_FILE.write_text(json.dumps({**snap, "saved_at": time.time()}), encoding="utf-8")
+        except OSError as e:
+            log.warning("could not save state: %s", e)
+
+    def _resume_state(self, icao: str) -> None:
+        """Pick up the flight after a restart: same airport, saved less than 3 h ago."""
+        try:
+            d = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return
+        if d.get("dep") != icao or time.time() - d.get("saved_at", 0) > RESUME_MAX_AGE_S:
+            return
+        self.brain.restore(d)
+        b = self.brain
+        print(f"Resumed flight: phase {b.phase.value}, runway {b.runway}, squawk {b.squawk}, "
+              f"destination {b.fc.destination}  (start with --fresh to begin anew)")
 
     # ---------------------------------------------------------------- output
     async def speaker(self) -> None:
@@ -161,6 +195,7 @@ class App:
                 continue
             for tx in self.monitor.tick(s):
                 await self.queue.put(tx)
+            self._save_state()
 
     def _stdin_reader(self) -> None:
         for line in sys.stdin:
@@ -193,6 +228,12 @@ class App:
         self.monitor = Monitor(self.brain)
         self.brain.update(s)
         b = self.brain
+        if not self.fresh:
+            self._resume_state(airport.icao)
+        if self.skip_clearance and b.phase == Phase.PARKED:
+            tx = b.skip_clearance()
+            print(f"Clearance issued without radio (--skip-clearance): {tx.text}")
+        self._save_state()
         print(f"{airport.icao} {airport.name}  ({len(airport.runways)} rwy, {len(airport.edges)} taxi edges)")
         for pos in ("DELIVERY", "GROUND", "TOWER", "DEPARTURE"):
             from .state import Position
@@ -217,6 +258,9 @@ def main() -> None:
     ap.add_argument("--config", default="config.toml")
     ap.add_argument("--text", action="store_true", help="type instead of speaking")
     ap.add_argument("--no-tts", action="store_true", help="print ATC instead of speaking")
+    ap.add_argument("--fresh", action="store_true", help="ignore the saved flight state")
+    ap.add_argument("--skip-clearance", action="store_true",
+                    help="testing: start with the IFR clearance already issued (go straight to Ground)")
     a = ap.parse_args()
     try:
         from dotenv import load_dotenv
@@ -225,7 +269,8 @@ def main() -> None:
         pass
     logfile = setup_logging()
     print(f"log: {logfile}")
-    app = App(load_config(a.config), a.text, not a.no_tts)
+    app = App(load_config(a.config), a.text, not a.no_tts, fresh=a.fresh or a.skip_clearance,
+              skip_clearance=a.skip_clearance)
     try:
         asyncio.run(app.run())
     except (KeyboardInterrupt, RuntimeError) as e:

@@ -624,6 +624,39 @@ class Brain:
         if self.assigned_alt and abs(sim.altitude_ft - self.assigned_alt) < 200:
             self.alt_captured = True
 
+    # ------------------------------------------------------------ persistence
+    STATE_FIELDS = ("runway", "arr_runway", "sid", "squawk", "assigned_alt", "cleared_takeoff",
+                    "cleared_land", "gate")
+
+    def snapshot(self) -> dict:
+        """What survives a program restart (the taxi route is recomputed on request)."""
+        d = {k: getattr(self, k) for k in self.STATE_FIELDS}
+        d.update(phase=self.phase.value, dep=self.dep.icao, destination=self.fc.destination)
+        return d
+
+    def restore(self, d: dict) -> None:
+        for k in self.STATE_FIELDS:
+            if k in d:
+                setattr(self, k, d[k])
+        self.fc.destination = d.get("destination") or self.fc.destination
+        self.phase = Phase(d.get("phase", Phase.PARKED.value))
+        if self.phase in ARRIVAL_PHASES:
+            self._load_dest()
+        log.info("restored state: %s", d)
+
+    def skip_clearance(self) -> Transmission:
+        """Testing shortcut: issue the IFR clearance without the radio exchange."""
+        if self.runway is None:
+            self.runway = self._select_dep_runway()
+        self.sid = self._select_sid(self.runway)
+        self.squawk = self.squawk or self._new_squawk()
+        self.assigned_alt = self.fc.initial_alt_ft
+        tx = self._tx(Position.DELIVERY, self.phr.ifr_clearance(
+            self.fc.destination or "destination", self.runway, self.sid, self.assigned_alt,
+            self.squawk, self.freq_of(Position.DEPARTURE, self.dep)))
+        self._set_phase(Phase.CLEARANCE)
+        return tx
+
     def reset_for_next_flight(self) -> None:
         if self.dest is not None:
             self.dep, self.dest = self.dest, None

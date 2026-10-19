@@ -153,6 +153,17 @@ def test_incursion_on_uncleared_crossing_runway(kbtv):
     assert m._runway_incursion(sim_at(lat, lon, 126300, groundspeed_kt=10)) == []
 
 
+def test_snapshot_restore_and_skip_clearance(kbtv):
+    b = Brain(FlightConfig(callsign="DLH4AB", destination="KBOS"), kbtv)
+    b.sim = sim_at(44.47, -73.15, 126300)
+    tx = b.skip_clearance()
+    assert b.phase == Phase.CLEARANCE and b.squawk and "cleared to KBOS" in tx.text
+    snap = b.snapshot()
+    b2 = Brain(FlightConfig(callsign="DLH4AB"), kbtv)
+    b2.restore(snap)
+    assert (b2.phase, b2.squawk, b2.runway, b2.fc.destination) == (Phase.CLEARANCE, b.squawk, b.runway, "KBOS")
+
+
 def test_unknown_destination_is_rejected(kbtv):
     class FakeIndex:
         entries = {"KBOS": (), "KBTV": ()}
