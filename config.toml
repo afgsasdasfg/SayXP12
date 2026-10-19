@@ -30,7 +30,7 @@ require_tuned = true         # only hear ATC on a frequency tuned in COM1/COM2
 ptt_key = "ctrl_r"           # pynput key name; also X-Plane command sim/operation/contact_atc
 input_device = ""            # sounddevice name/index; empty = default
 whisper_model = "small.en"   # tiny.en / base.en / small.en / medium.en
-whisper_device = "auto"      # auto | cuda | cpu
+whisper_device = "cpu"       # auto | cuda | cpu (cuda needs nvidia-cublas-cu12 + cudnn, see README)
 radio_effect = true
 speech_rate = 0.9            # Piper length_scale (<1 faster)
 

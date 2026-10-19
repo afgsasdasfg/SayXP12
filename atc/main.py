@@ -67,6 +67,7 @@ class App:
         self.loop: asyncio.AbstractEventLoop | None = None
         self.queue: asyncio.Queue[Transmission] = asyncio.Queue()
         self.ptt_down = False
+        self.pilot_busy = False   # PTT held or the last call still being transcribed/parsed
         self.speaking = False
         xp = cfg.get("xplane", {})
         self.xp_root = Path(xp.get("root") or default_xp_root() or ".")
@@ -99,6 +100,10 @@ class App:
         """Called from the keyboard thread or the sim websocket task."""
         self.ptt_down = down
         if down:
+            # the pilot is answering: hold proactive calls and restart the readback timer
+            self.pilot_busy = True
+            if self.brain and self.brain.pending:
+                self.brain.pending.t = time.time()
             self.recorder.start()
             print("\U0001F3A4 ...", flush=True)
         else:
@@ -107,10 +112,16 @@ class App:
                 self.loop.call_soon_threadsafe(lambda: asyncio.ensure_future(self._transcribe(audio)))
 
     async def _transcribe(self, audio) -> None:
-        prompt = self.brain.stt_prompt() if self.brain else ""
-        text = await asyncio.get_running_loop().run_in_executor(None, self.stt.transcribe, audio, prompt)
-        if text:
-            await self.pilot_says(text)
+        try:
+            prompt = self.brain.stt_prompt() if self.brain else ""
+            text = await asyncio.get_running_loop().run_in_executor(None, self.stt.transcribe, audio, prompt)
+            if text:
+                await self.pilot_says(text)
+        finally:
+            # STT + parsing can take seconds; the readback timer starts over afterwards
+            if self.brain and self.brain.pending:
+                self.brain.pending.t = time.time()
+            self.pilot_busy = self.ptt_down
 
     async def pilot_says(self, text: str) -> None:
         s = self.link.state()
@@ -146,7 +157,7 @@ class App:
         while True:
             await asyncio.sleep(1.0)
             s = self.link.state()
-            if s.paused or self.speaking or self.ptt_down:
+            if s.paused or self.speaking or self.ptt_down or self.pilot_busy:
                 continue
             for tx in self.monitor.tick(s):
                 await self.queue.put(tx)
