@@ -153,6 +153,14 @@ class App:
         except OSError as e:
             log.warning("could not save state: %s", e)
 
+    @staticmethod
+    def _saved_departure() -> str | None:
+        try:
+            d = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return d.get("dep") if time.time() - d.get("saved_at", 0) <= RESUME_MAX_AGE_S else None
+
     def _resume_state(self, icao: str) -> None:
         """Pick up the flight after a restart: same airport, saved less than 3 h ago."""
         try:
@@ -228,6 +236,8 @@ class App:
         s = self.link.state()
         index = AptIndex(self.xp_root)
         icao = self.cfg.get("flight", {}).get("departure") or index.nearest(s.lat, s.lon)
+        if not icao and not self.fresh:
+            icao = self._saved_departure()  # restarted in flight, far from any airport
         if not icao:
             print("No airport near the aircraft; set [flight] departure in config.toml")
             return
