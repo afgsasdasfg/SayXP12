@@ -514,12 +514,14 @@ class Brain:
         self.alt_captured = False
 
     def _select_dep_runway(self) -> str:
-        e = select_runway(self.dep, self.sim.wind_dir_true, self.sim.wind_speed_kt)
+        e = select_runway(self.dep, self.sim.wind_dir_true, self.sim.wind_speed_kt,
+                          acf_type=self.sim.acf_icao or None)
         return e.name if e else "??"
 
     def _select_arr_runway(self) -> str:
         ap = self.dest or self.dep
-        e = select_runway(ap, self.sim.wind_dir_true, self.sim.wind_speed_kt)
+        e = select_runway(ap, self.sim.wind_dir_true, self.sim.wind_speed_kt,
+                          acf_type=self.sim.acf_icao or None)
         return e.name if e else "??"
 
     def _select_sid(self, rwy: str) -> str | None:

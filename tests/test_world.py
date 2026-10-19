@@ -46,6 +46,15 @@ def test_runway_by_wind(kbtv):
     assert abs(head - 10) < 0.01 and abs(cross) < 0.01
 
 
+def test_runway_too_short_for_type(kbtv):
+    # live test: wind favoured 19 (01/19 is 1254 x 23 m) for an A20N
+    assert select_runway(kbtv, 190, 10).name == "19"                      # no type known
+    assert select_runway(kbtv, 190, 10, acf_type="A20N").name in ("15", "33")
+    assert select_runway(kbtv, 190, 10, acf_type="C172").name == "19"     # fine for a Cessna
+    # nothing long enough -> longest runway, never the short one
+    assert select_runway(kbtv, 190, 10, acf_type="A388").name in ("15", "33")
+
+
 def test_taxi_route_gate_to_runway(kbtv):
     g = next(g for g in kbtv.gates if g.name == "1")
     rt = taxi.route_to_runway(kbtv, g.lat, g.lon, "15")
