@@ -94,6 +94,17 @@ def test_runway_incursion(kbtv):
     assert out and "STOP" in out[0].text
 
 
+def test_radio_check_and_initial_call(kbtv):
+    b = Brain(FlightConfig(callsign="DLH4AB"), kbtv)
+    p = IntentParser()
+    s = sim_at(44.47, -73.15, 119150)
+    out = say(b, p, "Living good day, Lufthansa four Alpha Bravo, ready check.", s)
+    assert out[0].text == "DLH4AB, Burlington Delivery, read you five"
+    out = say(b, p, "Burlington Delivery, Lufthansa four alpha bravo, good day", s)
+    assert out[0].text == "DLH4AB, Burlington Delivery, go ahead"
+    assert "Burlington Ground" in b.stt_prompt()
+
+
 def test_frequency_nobody_listening(kbtv):
     b = Brain(FlightConfig(callsign="DLH4AB"), kbtv)
     out = say(b, IntentParser(), "request taxi", sim_at(44.47, -73.15, 130000))

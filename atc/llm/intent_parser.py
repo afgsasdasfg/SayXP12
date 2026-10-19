@@ -29,6 +29,7 @@ INTENTS = [
     "report_final",         # "established ILS 27", "on final", request landing
     "report_position",
     "say_again",            # pilot asks ATC to repeat
+    "radio_check",          # "radio check, how do you read"
     "acknowledge",          # roger / wilco without readback
     "unable",
     "other",
@@ -142,6 +143,9 @@ def classify_rules(text: str) -> str:
         return "other"
     if re.search(r"\bsay again\b|\brepeat\b", t):
         return "say_again"
+    # Whisper often hears "radio check" as "ready check" / "radar check"
+    if re.search(r"\b(?:radio|ready|radar|radial) ?check\b|\bhow do you read\b|\bhow do you copy\b", t):
+        return "radio_check"
     if re.search(r"\b(clearance|cleared to [a-z]{4}|ifr to|request ifr)\b", t) and "request" in t:
         return "request_clearance"
     if re.search(r"\bpush ?back\b|\brequest(?:ing)? push\b|\bpush and start\b", t) and "approved" not in t:

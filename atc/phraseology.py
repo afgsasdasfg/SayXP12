@@ -269,6 +269,12 @@ class Phraseology:
         return self._out(t, s)
 
     # generic ---------------------------------------------------------------
+    def radio_check(self, station: str) -> tuple[str, str]:
+        return self._out(f"{station}, read you five", f"{station}, read you five")
+
+    def go_ahead(self, station: str) -> tuple[str, str]:
+        return self._out(f"{station}, go ahead", f"{station}, go ahead")
+
     def say_again(self) -> tuple[str, str]:
         return self._out("say again", "say again")
 

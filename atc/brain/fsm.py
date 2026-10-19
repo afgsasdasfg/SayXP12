@@ -176,7 +176,9 @@ class Brain:
     def stt_prompt(self) -> str:
         ap = self.field
         twys = sorted({e.name for e in ap.edges if e.name and e.kind == "taxiway"})[:30]
-        return (f"{self.phr.cs_spoken}. {ap.icao} {ap.name}. Runway "
+        stations = ", ".join(self.station_name(p) for p in
+                             (Position.DELIVERY, Position.GROUND, Position.TOWER, Position.DEPARTURE))
+        return (f"{stations}, good day, {self.phr.cs_spoken}, radio check. {ap.icao} {ap.name}. Runway "
                 + ", ".join(e.name for r in ap.runways for e in r.ends)
                 + ". Taxiways " + ", ".join(twys) + ". Squawk, QNH, flight level, cleared, readback.")
 
@@ -249,6 +251,8 @@ class Brain:
             if self.last_tx and self.last_tx.position == pos:
                 return [self._tx(pos, (self.last_tx.text, self.last_tx.spoken), self.last_tx.expects_readback)]
             return [self._tx(pos, self.phr.say_again())]
+        if intent.intent == "radio_check":
+            return [self._tx(pos, self.phr.radio_check(self.station_name(pos)))]
         if self.pending and pos == self.pending.position and intent.intent in ("readback", "acknowledge"):
             return self._check_readback(intent)
         if intent.intent in ("readback", "acknowledge"):
@@ -261,7 +265,28 @@ class Brain:
             return out
         if pos != exp:
             return [self._tx(pos, self.phr.wrong_frequency(exp.value.lower(), self.freq_of(exp)))]
+        if intent.intent in ("check_in", "report_position"):
+            # initial call without a request ("Delivery, DLH4AB, good day")
+            return [self._tx(pos, self.phr.go_ahead(self.station_name(pos)))]
         return [self._tx(pos, self.phr.say_again())]
+
+    def station_name(self, pos: Position) -> str:
+        """'Burlington Delivery': city from the apt.dat frequency names, else airport name."""
+        if pos == Position.CENTER:
+            return "Center"
+        ap = self.field
+        city = ap.meta.get("city", "")
+        if not city:
+            for lst in ap.freqs.values():
+                for f in lst:
+                    words = f.name.split()
+                    if len(words) >= 2:
+                        city = words[0]
+                        break
+                if city:
+                    break
+        city = (city or ap.name.split()[0]).title()
+        return f"{city} {pos.value}"
 
     # Each _on_<position> returns transmissions, or None when that station would not
     # handle this request now (-> "contact <expected>").
