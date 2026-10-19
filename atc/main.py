@@ -146,6 +146,8 @@ class App:
         snap = self.brain.snapshot()
         if snap == self._last_snap:
             return
+        if snap["phase"] == Phase.PARKED.value and not snap["squawk"]:
+            return  # nothing issued yet: don't overwrite a saved flight with an empty one
         self._last_snap = snap
         try:
             STATE_FILE.parent.mkdir(exist_ok=True)
@@ -235,9 +237,10 @@ class App:
         await self.link.ready.wait()
         s = self.link.state()
         index = AptIndex(self.xp_root)
-        icao = self.cfg.get("flight", {}).get("departure") or index.nearest(s.lat, s.lon)
-        if not icao and not self.fresh:
-            icao = self._saved_departure()  # restarted in flight, far from any airport
+        icao = self.cfg.get("flight", {}).get("departure")
+        if not icao and not self.fresh and not s.on_ground:
+            icao = self._saved_departure()  # restarted in flight: the nearest strip is not our airport
+        icao = icao or index.nearest(s.lat, s.lon)
         if not icao:
             print("No airport near the aircraft; set [flight] departure in config.toml")
             return
