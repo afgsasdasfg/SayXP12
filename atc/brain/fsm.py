@@ -88,6 +88,8 @@ class Brain:
         self.squawk: str | None = None
         self.assigned_alt: int | None = None
         self.alt_captured = False
+        self.assigned_hdg: int | None = None   # magnetic, while under radar vectors
+        self.hdg_captured = False
         self.route: taxi.TaxiRoute | None = None
         self.route_joined = False
         self.leg_idx = 0                       # current clearance limit in route.legs
@@ -218,6 +220,8 @@ class Brain:
     def _same(slot: str, got, val) -> bool:
         if slot == "altitude":
             return abs(int(got) - int(val)) < 50
+        if slot == "heading":
+            return (int(got) - int(val)) % 360 == 0
         if slot == "frequency":
             try:
                 return abs(float(got) * 1000 - int(val)) <= 5
@@ -239,6 +243,9 @@ class Brain:
             return "altitude", t, s
         if slot == "frequency":
             return "frequency", freq_text(int(val)), freq(int(val))
+        if slot == "heading":
+            from ..phraseology import heading as hdg_s
+            return "heading", f"{int(val):03d}", hdg_s(int(val))
         if slot == "cleared_takeoff":
             return "cleared for takeoff", "", ""
         if slot == "cleared_land":
@@ -467,8 +474,15 @@ class Brain:
             new_alt = min(self.fc.cruise_ft, max(self.assigned_alt or 0, 10000)) \
                 if self.fc.cruise_ft > (self.assigned_alt or 0) else self.assigned_alt
             self._assign_alt(new_alt)
-            tx = self._tx(D, self.phr.radar_contact(new_alt), True)
-            self._expect(tx, {"altitude": new_alt}, set())
+            expected: dict = {"altitude": new_alt}
+            hdg, turn = (None, None)
+            if self.sid is None:  # "radar vectors" departure: give a heading
+                hdg = self._vector_heading()
+                turn = self._turn_direction(hdg)
+                self._assign_heading(hdg)
+                expected["heading"] = hdg
+            tx = self._tx(D, self.phr.radar_contact(new_alt, hdg, turn), True)
+            self._expect(tx, expected, set())
             return [tx]
         return self._on_center(it) if self.phase in (Phase.ENROUTE, Phase.ARRIVAL, Phase.APPROACH) else None
 
@@ -479,8 +493,13 @@ class Brain:
             self._set_phase(Phase.ENROUTE)
             alt = self.fc.cruise_ft
             self._assign_alt(alt)
-            tx = self._tx(C, self.phr.climb(alt, "identified, climb") if self.sim.altitude_ft < alt - 300
-                          else self.phr.climb(alt, "identified, maintain"), True)
+            verb = "identified, climb" if self.sim.altitude_ft < alt - 300 else "identified, maintain"
+            t, s = self.phr.climb(alt, verb)
+            if self.assigned_hdg is not None:  # end of radar vectors
+                self._assign_heading(None)
+                nav_t, nav_s = self.phr.end_vectors(self.fc.destination)
+                t, s = f"{t}, {nav_t}", f"{s}, {nav_s}"
+            tx = self._tx(C, (t, s), True)
             self._expect(tx, {"altitude": alt}, set())
             return [tx]
         if it.intent == "request_descent" and self.phase in (Phase.ENROUTE, Phase.ARRIVAL):
@@ -521,6 +540,35 @@ class Brain:
     def _assign_alt(self, alt: int) -> None:
         self.assigned_alt = alt
         self.alt_captured = False
+
+    def _assign_heading(self, hdg: int | None) -> None:
+        self.assigned_hdg = hdg
+        self.hdg_captured = False
+
+    @property
+    def magvar(self) -> float:
+        """True minus magnetic, from the sim's own two headings."""
+        return ((self.sim.heading_true - self.sim.heading_mag + 180) % 360) - 180
+
+    def _vector_heading(self) -> int:
+        """Magnetic heading towards the destination, else runway heading; rounded to 10°."""
+        from ..world.aptdat import bearing_deg
+        true = None
+        if self.index and self.fc.destination and self.fc.destination in self.index.entries:
+            _, _, lat, lon = self.index.entries[self.fc.destination][:4]
+            if lat is not None:
+                true = bearing_deg(self.sim.lat, self.sim.lon, lat, lon)
+        if true is None:
+            end = self.dep.runway_end(self.runway or "")
+            true = end.heading_true if end else self.sim.heading_true
+        mag = (true - self.magvar) % 360
+        return int(round(mag / 10.0) * 10) % 360 or 360
+
+    def _turn_direction(self, hdg: int) -> str | None:
+        diff = (hdg - self.sim.heading_mag + 540) % 360 - 180
+        if abs(diff) < 10:
+            return None  # "fly heading"
+        return "right" if diff > 0 else "left"
 
     def _select_dep_runway(self) -> str:
         e = select_runway(self.dep, self.sim.wind_dir_true, self.sim.wind_speed_kt,
@@ -642,10 +690,12 @@ class Brain:
             self.reset_for_next_flight()
         if self.assigned_alt and abs(sim.altitude_ft - self.assigned_alt) < 200:
             self.alt_captured = True
+        if self.assigned_hdg is not None and abs((sim.heading_mag - self.assigned_hdg + 540) % 360 - 180) < 10:
+            self.hdg_captured = True
 
     # ------------------------------------------------------------ persistence
-    STATE_FIELDS = ("runway", "arr_runway", "sid", "squawk", "assigned_alt", "cleared_takeoff",
-                    "cleared_land", "gate")
+    STATE_FIELDS = ("runway", "arr_runway", "sid", "squawk", "assigned_alt", "assigned_hdg",
+                    "cleared_takeoff", "cleared_land", "gate")
 
     def snapshot(self) -> dict:
         """What survives a program restart (the taxi route is recomputed on request)."""

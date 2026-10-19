@@ -18,6 +18,7 @@ MAX_REPEATS = 2
 HOLD_HANDOFF_M = 70.0
 CROSSING_CLEARANCE_M = 120.0
 TAXI_SPEED_KT = 30.0
+HDG_DEV_DEG = 20.0
 ROUTE_JOIN_M = 25.0
 ROUTE_LOST_M = 60.0
 ALT_DEV_FT = 300.0
@@ -42,7 +43,7 @@ class Monitor:
         out: list[Transmission] = []
         for rule in (self._no_readback, self._handoff_departure, self._handoff_center,
                      self._hold_short_handoff, self._runway_incursion, self._route_deviation,
-                     self._taxi_speed,
+                     self._taxi_speed, self._heading_deviation,
                      self._altitude_deviation, self._runway_vacated):
             try:
                 out += rule(s)
@@ -141,6 +142,16 @@ class Monitor:
         if b.route_joined and d > ROUTE_LOST_M and self._ready("missed_turn", 60):
             return [b._tx(Position.GROUND, b.phr.missed_turn())]
         return []
+
+    def _heading_deviation(self, s: SimState) -> list[Transmission]:
+        """Under radar vectors: once on the assigned heading, more than 20° off -> remind."""
+        b = self.b
+        if b.assigned_hdg is None or not b.hdg_captured or not b.tracker.airborne:
+            return []
+        off = abs((s.heading_mag - b.assigned_hdg + 540) % 360 - 180)
+        if off <= HDG_DEV_DEG or not self._ready("heading", 60):
+            return []
+        return [b._tx(b.expected_position(), b.phr.check_heading(b.assigned_hdg))]
 
     def _taxi_speed(self, s: SimState) -> list[Transmission]:
         """More than TAXI_SPEED_KT for a few seconds on taxiways (not on a runway)."""

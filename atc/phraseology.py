@@ -278,9 +278,28 @@ class Phraseology:
                          f"vacate when able, contact {pos} {freq(khz)}")
 
     # radar -----------------------------------------------------------------
-    def radar_contact(self, alt_ft: int, verb: str = "climb") -> tuple[str, str]:
+    def radar_contact(self, alt_ft: int, hdg: int | None = None, turn: str | None = None,
+                      verb: str = "climb") -> tuple[str, str]:
+        """'radar contact, turn right heading 160, climb FL100' (heading only under vectors)."""
         at, asp = self.alt(alt_ft)
-        return self._out(f"radar contact, {verb} {at}", f"radar contact, {verb} {asp}")
+        t, s = "radar contact", "radar contact"
+        if hdg is not None:
+            ht, hs = self.heading_instr(hdg, turn)
+            t, s = f"{t}, {ht}", f"{s}, {hs}"
+        return self._out(f"{t}, {verb} {at}", f"{s}, {verb} {asp}")
+
+    @staticmethod
+    def heading_instr(hdg: int, turn: str | None) -> tuple[str, str]:
+        lead = f"turn {turn} heading" if turn else "fly heading"
+        return f"{lead} {hdg:03d}", f"{lead} {heading(hdg)}"
+
+    def end_vectors(self, dest: str | None) -> tuple[str, str]:
+        if dest:
+            return f"proceed direct {dest}", f"proceed direct {letters(dest)}"
+        return "resume own navigation", "resume own navigation"
+
+    def check_heading(self, hdg: int) -> tuple[str, str]:
+        return self._out(f"check heading, fly heading {hdg:03d}", f"check heading, fly heading {heading(hdg)}")
 
     def climb(self, alt_ft: int, verb: str = "climb") -> tuple[str, str]:
         at, asp = self.alt(alt_ft)

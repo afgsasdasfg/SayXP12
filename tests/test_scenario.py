@@ -193,6 +193,39 @@ def test_flight_level_readbacks_from_live_test(kbtv):
         assert b.pending is None
 
 
+def test_radar_vectors_after_departure(kbtv):
+    from atc.world.aptdat import bearing_deg
+
+    class FakeIndex:
+        entries = {"KBOS": ("x", 0, 42.3656, -71.0096), "KBTV": ("x", 0, 44.47, -73.15)}
+
+    b = Brain(FlightConfig(callsign="DLH4AB", destination="KBOS"), kbtv, index=FakeIndex())
+    m = Monitor(b)
+    p = IntentParser()
+    b.phase, b.runway, b.assigned_alt = Phase.DEPARTURE, "15", 5000
+    # Vermont: magnetic variation ~14 W -> magnetic = true + 14
+    s = sim_at(44.46, -73.14, 121100, on_ground=False, agl_ft=2000, altitude_ft=2300,
+               heading_true=131, heading_mag=145)
+    out = say(b, p, "Departure, Lufthansa four alpha bravo, passing 2300 climbing 5000", s)
+    want = int(round(((bearing_deg(44.46, -73.14, 42.3656, -71.0096) + 14) % 360) / 10) * 10)
+    assert b.assigned_hdg == want
+    assert f"heading {want:03d}, climb FL100" in out[0].text  # "fly heading" or "turn ... heading"
+    # readback with the heading
+    out = say(b, p, f"heading {want}, climb flight level 100, Lufthansa four alpha bravo", s)
+    assert out == [] and b.pending is None
+    # on the heading, then 30 degrees off -> reminder
+    on = sim_at(44.46, -73.14, 121100, on_ground=False, agl_ft=3000, heading_mag=want, heading_true=want - 14)
+    for _ in range(3):
+        m.tick(on)
+    off = sim_at(44.46, -73.14, 121100, on_ground=False, agl_ft=3000, heading_mag=(want + 30) % 360)
+    assert any(f"check heading, fly heading {want:03d}" in t.text for t in m._heading_deviation(off))
+    # Center ends the vectors
+    b.phase = Phase.ENROUTE
+    out = say(b, p, "Center, Lufthansa four alpha bravo, passing flight level 110",
+              sim_at(44.4, -73.0, 127900, on_ground=False, agl_ft=11000, altitude_ft=11000))
+    assert "proceed direct KBOS" in out[0].text and b.assigned_hdg is None
+
+
 def test_unknown_destination_is_rejected(kbtv):
     class FakeIndex:
         entries = {"KBOS": (), "KBTV": ()}

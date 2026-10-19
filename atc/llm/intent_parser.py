@@ -139,6 +139,8 @@ def extract_slots(text: str) -> dict:
         s["squawk"] = m.group(1)
     if m := re.search(r"flight level (\d{2,3})\b", t):
         s["flight_level"] = int(m.group(1))
+    if m := re.search(r"\bheading (\d{1,3})\b", t):
+        s["heading"] = int(m.group(1)) % 360 or 360
     # altitude in feet; a flight level is not an altitude ("flight level 100" != 100 ft)
     t_alt = re.sub(r"flight level \d{2,3}", " ", t)
     if m := re.search(r"(?:climb|climbing|descend|descending|maintain|maintaining|passing|initial|altitude)"
