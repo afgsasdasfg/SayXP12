@@ -105,6 +105,18 @@ def test_radio_check_and_initial_call(kbtv):
     assert "Burlington Ground" in b.stt_prompt()
 
 
+def test_handoff_thanks_and_push_facing(kbtv):
+    b = Brain(FlightConfig(callsign="DLH4AB", destination="KBOS"), kbtv)
+    p = IntentParser()
+    gate = next(g for g in kbtv.gates if g.name == "1")
+    # live test: frequency readback on the old frequency must not trigger "wrong frequency"
+    out = say(b, p, "26 decimal three for push and start, thank you.", sim_at(gate.lat, gate.lon, 119150))
+    assert out == []
+    b.phase = Phase.CLEARANCE
+    out = say(b, p, "Lufthansa four Bravo, request push and start.", sim_at(gate.lat, gate.lon, 126300))
+    assert "push and start approved, facing" in out[0].text
+
+
 def test_unknown_destination_is_rejected(kbtv):
     class FakeIndex:
         entries = {"KBOS": (), "KBTV": ()}

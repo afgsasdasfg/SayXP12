@@ -258,6 +258,8 @@ class Brain:
         if intent.intent in ("readback", "acknowledge"):
             self.pending = None
             return []  # nothing outstanding: silence is the realistic answer
+        if self._acknowledges_handoff(intent, pos):
+            return []  # "126.3 for push and start, thank you" on the old frequency
         exp = self.expected_position()
         handler = getattr(self, f"_on_{pos.name.lower()}", None)
         out = handler(intent) if handler else None
@@ -345,7 +347,7 @@ class Brain:
                 return [self._tx(G, self.phr.contact("delivery", dl, "for clearance first"))]
         if it.intent == "request_pushback":
             self._set_phase(Phase.PUSH_START)
-            return [self._tx(G, self.phr.push_start())]
+            return [self._tx(G, self.phr.push_start(self._push_facing()))]
         if it.intent == "request_startup":
             return [self._tx(G, self.phr.startup())]
         if it.intent == "request_taxi" or (it.intent == "check_in" and self.phase in (Phase.CLEARANCE, Phase.PUSH_START)):
@@ -492,6 +494,42 @@ class Brain:
             if any(self.fc.first_fix.upper() in fixes for fixes in p.transitions.values()):
                 return p.ident
         return None
+
+    def _acknowledges_handoff(self, it: PilotIntent, pos: Position) -> bool:
+        """Pilot reads back another station's frequency on this one = acknowledging a handoff."""
+        f = it.readback.get("frequency")
+        if not f:
+            return False
+        try:
+            khz = round(float(f) * 1000)
+        except ValueError:
+            return False
+        own = self.freq_of(pos)
+        for other in Position:
+            k = self.freq_of(other)
+            if other != pos and k and k != own and abs(k - khz) <= 5:
+                return True
+        return False
+
+    def _push_facing(self) -> str | None:
+        """Direction the nose should point after pushback: along the start of the taxi route."""
+        if self.runway is None:
+            self.runway = self._select_dep_runway()
+        s = self.sim
+        rt = taxi.route_to_runway(self.dep, s.lat, s.lon, self.runway,
+                                  taxi.aircraft_class(s.acf_icao or "A320"))
+        if not rt.ok or len(rt.nodes) < 2:
+            return None
+        from ..world.aptdat import bearing_deg
+        a = self.dep.nodes[rt.nodes[0]]
+        b = self.dep.nodes[rt.nodes[-1]]
+        for nid in rt.nodes[1:]:  # first route point ~60 m away; short connectors give odd bearings
+            b = self.dep.nodes[nid]
+            if distance_m(a.lat, a.lon, b.lat, b.lon) >= 60:
+                break
+        brg = bearing_deg(a.lat, a.lon, b.lat, b.lon)
+        names = ["north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest"]
+        return names[int((brg + 22.5) // 45) % 8]
 
     def _resolve_airport(self, code: str) -> str | None:
         """Validate a destination against apt.dat; 'BOS' -> 'KBOS'. Without an index, trust 4 letters."""

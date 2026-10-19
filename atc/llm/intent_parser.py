@@ -122,6 +122,8 @@ def extract_slots(text: str) -> dict:
         s["altitude"] = int(m.group(1))
     if m := re.search(r"\b(1[1-3]\d\.\d{1,3})\b", t):
         s["frequency"] = m.group(1)
+    elif m := re.search(r"\b([1-3]\d\.\d{1,3})\b", t):
+        s["frequency"] = "1" + m.group(1)  # Whisper drops the leading "one": "26 decimal 3"
     if "cleared for take off" in t or "cleared for takeoff" in t or "cleared takeoff" in t:
         s["cleared_takeoff"] = True
     if "cleared to land" in t:
