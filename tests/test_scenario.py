@@ -105,6 +105,19 @@ def test_radio_check_and_initial_call(kbtv):
     assert "Burlington Ground" in b.stt_prompt()
 
 
+def test_unknown_destination_is_rejected(kbtv):
+    class FakeIndex:
+        entries = {"KBOS": (), "KBTV": ()}
+
+    b = Brain(FlightConfig(callsign="DLH4AB"), kbtv, index=FakeIndex())
+    p = IntentParser()
+    s = sim_at(44.47, -73.15, 119150)
+    out = say(b, p, "Delivery DLH4AB request IFR clearance to KILA", s)
+    assert "unable to find KILA" in out[0].text and b.squawk is None
+    out = say(b, p, "Delivery DLH4AB request IFR clearance to bos", s)
+    assert "cleared to KBOS" in out[0].text
+
+
 def test_frequency_nobody_listening(kbtv):
     b = Brain(FlightConfig(callsign="DLH4AB"), kbtv)
     out = say(b, IntentParser(), "request taxi", sim_at(44.47, -73.15, 130000))

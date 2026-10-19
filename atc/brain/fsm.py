@@ -299,7 +299,13 @@ class Brain:
         dest = (it.data.get("destination") or it.readback.get("destination") or self.fc.destination or "")
         if not dest:
             return [self._tx(Position.DELIVERY, self.phr.custom("say destination"))]
-        self.fc.destination = dest.upper()
+        icao = self._resolve_airport(dest)
+        if icao is None:
+            from ..phraseology import letters
+            d = dest.upper()
+            return [self._tx(Position.DELIVERY, self.phr.custom(
+                f"unable to find {d}, say again destination", f"unable to find {letters(d)}, say again destination"))]
+        self.fc.destination = icao
         if self.runway is None:
             self.runway = self._select_dep_runway()
         self.sid = self._select_sid(self.runway)
@@ -485,6 +491,17 @@ class Brain:
         for p in sids_for_runway(parse_cifp(f), rwy):
             if any(self.fc.first_fix.upper() in fixes for fixes in p.transitions.values()):
                 return p.ident
+        return None
+
+    def _resolve_airport(self, code: str) -> str | None:
+        """Validate a destination against apt.dat; 'BOS' -> 'KBOS'. Without an index, trust 4 letters."""
+        code = code.upper().strip()
+        if self.index is None:
+            return code if len(code) == 4 else None
+        if code in self.index.entries:
+            return code
+        if len(code) == 3 and "K" + code in self.index.entries:
+            return "K" + code
         return None
 
     def _new_squawk(self) -> str:

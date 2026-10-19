@@ -6,6 +6,7 @@ atc.brain, never by the LLM.
 """
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import re
@@ -87,6 +88,21 @@ def normalize(text: str) -> str:
     return t
 
 
+def nato_letter(word: str) -> str | None:
+    """NATO word -> letter, tolerant to Whisper spellings ("kila", "oskar", "siera")."""
+    if word in NATO_WORDS:
+        return NATO_WORDS[word]
+    if len(word) < 4:
+        return None
+    close = difflib.get_close_matches(word, NATO_WORDS.keys(), n=1, cutoff=0.75)
+    return NATO_WORDS[close[0]] if close else None
+
+
+def nato_spelling(words: list[str]) -> str | None:
+    letters = [nato_letter(w) for w in words]
+    return "".join(letters) if all(letters) else None
+
+
 def extract_slots(text: str) -> dict:
     """Regex slot extraction from a normalised transmission."""
     t = normalize(text)
@@ -112,13 +128,15 @@ def extract_slots(text: str) -> dict:
         s["cleared_land"] = True
     if "line up" in t or "lining up" in t or "position and hold" in t:
         s["line_up"] = True
-    nato = "|".join(NATO_WORDS)
     dest_re = r"\b(?:cleared|clearance|ifr|destination|flight plan)(?: \w+)?(?: to)? "
-    if m := re.search(dest_re + rf"((?:(?:{nato}) ){{3}}(?:{nato}))\b", t):
-        s["destination"] = "".join(NATO_WORDS[w] for w in m.group(1).split())  # "kilo bravo oscar sierra"
-    elif m := re.search(dest_re + r"([a-z]{4})\b", t):
+    m = re.search(dest_re + r"((?:[a-z]+ ){3}[a-z]+)\b", t)
+    spelled = nato_spelling(m.group(1).split()) if m else None
+    if spelled:
+        s["destination"] = spelled  # "kilo bravo oscar sierra", also Whisper's "kila ... oskar"
+    elif m := re.search(dest_re + r"([a-z]{3,4})\b", t):  # ICAO, or FAA 3-letter ("bos")
         cand = m.group(1).upper()
-        if cand not in ("TAXI", "PUSH", "LAND", "FROM", "WITH", "HOLD", "TAKE", "LINE", "THAT"):
+        if cand not in ("TAXI", "PUSH", "LAND", "FROM", "WITH", "HOLD", "TAKE", "LINE", "THAT",
+                        "THE", "AND", "YOU", "FOR", "VIA", "NOW", "OUR"):
             s["destination"] = cand
     if m := re.search(r"(?:information|info) ([a-z]+)\b", t):
         s["information"] = NATO_WORDS.get(m.group(1), m.group(1)[:1].upper())
