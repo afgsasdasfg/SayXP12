@@ -16,6 +16,7 @@ log = logging.getLogger("monitor")
 NO_READBACK_S = 10.0
 MAX_REPEATS = 2
 HOLD_HANDOFF_M = 70.0
+CROSSING_CLEARANCE_M = 120.0
 ROUTE_JOIN_M = 25.0
 ROUTE_LOST_M = 60.0
 ALT_DEV_FT = 300.0
@@ -88,9 +89,17 @@ class Monitor:
 
     def _hold_short_handoff(self, s: SimState) -> list[Transmission]:
         b = self.b
-        if b.phase != Phase.TAXI_OUT or b.pending is not None:
+        if b.phase not in (Phase.TAXI_OUT, Phase.TAXI_IN) or b.pending is not None:
             return []
         d = b.distance_to_hold()
+        if b.has_next_leg():
+            # approaching a runway on the route: clear the crossing early so the pilot
+            # doesn't have to stop (they still must not cross before hearing it)
+            if d is not None and d <= CROSSING_CLEARANCE_M:
+                return b.continue_taxi()
+            return []
+        if b.phase != Phase.TAXI_OUT:
+            return []
         if d is None or d > HOLD_HANDOFF_M or s.groundspeed_kt > 15:
             return []
         b._set_phase(Phase.HOLDING)
@@ -108,12 +117,13 @@ class Monitor:
         if s.groundspeed_kt < 2 or not s.on_ground:
             return []
         rwy = on_runway(b.dep, s.lat, s.lon)
-        if rwy is None or b.runway not in (rwy.ends[0].name, rwy.ends[1].name):
-            return []
+        if rwy is None or rwy.name in b.cleared_runways:
+            return []  # off runways, or on a runway we were cleared to cross
         if not self._ready("incursion", 30):
             return []
         pos = Position.TOWER if b.phase == Phase.HOLDING else Position.GROUND
-        return [b._tx(pos, b.phr.stop_hold_position(b.runway))]
+        word = b.runway if b.runway in (rwy.ends[0].name, rwy.ends[1].name) else b._hold_word(rwy.name)
+        return [b._tx(pos, b.phr.stop_hold_position(word))]
 
     def _route_deviation(self, s: SimState) -> list[Transmission]:
         b = self.b

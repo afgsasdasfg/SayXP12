@@ -43,6 +43,16 @@ def aircraft_class(icao_type: str) -> str:
 
 
 @dataclass
+class TaxiLeg:
+    """One clearance limit. Leg 0 is the taxi clearance; each later leg starts with a
+    runway crossing that ATC clears when the aircraft reaches the previous hold point."""
+    taxiways: list[str]
+    hold_short: str | None     # runway (end "19" or name "15/33") to hold short of; None = destination
+    cross: str | None          # runway crossed at the start of this leg
+    end: int                   # index into TaxiRoute.nodes of this leg's hold point
+
+
+@dataclass
 class TaxiRoute:
     ok: bool
     taxiways: list[str] = field(default_factory=list)       # folded names, in order
@@ -53,6 +63,8 @@ class TaxiRoute:
     edges: list[TaxiEdge] = field(default_factory=list)
     length_m: float = 0.0
     destination: str = ""
+    legs: list[TaxiLeg] = field(default_factory=list)
+    intersection: str | None = None   # taxiway of an intersection departure
 
 
 def _runway_matches(edge_name: str, end: str) -> bool:
@@ -122,54 +134,91 @@ def _cut_runway(ap: Airport, e: TaxiEdge) -> str | None:
     return None
 
 
-def _fold(edges: list[TaxiEdge], g: nx.DiGraph, path: list[int], active_runway: str | None,
-          ap: Airport | None = None):
-    """Turn the edge list into steps: via <twy> / cross <rwy>; stop at the hold short point."""
-    hold_idx = len(edges)
-    for i, e in enumerate(edges):
-        if active_runway and (
-            (e.kind == "runway" and _runway_matches(e.name, active_runway))
-            or active_runway in e.zone_runways()
-        ):
-            hold_idx = i
-            break
-    segs: list[list] = []   # [kind, name, length]
+def _protected(e: TaxiEdge) -> bool:
+    """Runway pavement or a runway's departure/arrival protected area (needs a clearance)."""
+    return e.kind == "runway" or bool(e.zone_runways())
 
-    def push(kind: str, name: str, length: float) -> None:
-        if segs and segs[-1][0] == kind and segs[-1][1] == name:
-            segs[-1][2] += length
-        else:
-            segs.append([kind, name, length])
 
-    for i, e in enumerate(edges[:hold_idx]):
-        length = g.edges[path[i], path[i + 1]]["length"]
-        if e.kind == "runway":
-            push("cross", e.name.strip(), length)
-            continue
-        push("via", e.name.strip(), length)
-        # active zones of other runways also cover parallel taxiways, so a zone alone
-        # is not a crossing: require the edge to actually cut the runway centreline
-        if ap is not None and e.zone_runways():
-            rw = _cut_runway(ap, e)
-            if rw:
-                push("cross", rw, 0.0)
-    merged = [s for s in segs if s[0] == "cross" or s[1]]  # drop unnamed apron lanes
-    # drop short connectors, keep the last taxiway before the hold
+def _fold_names(segs: list[list]) -> list[str]:
+    """[(name, length)] -> taxiway names: merge repeats, drop unnamed lanes and short
+    connectors (keeping the last named taxiway before the hold)."""
+    named = [s for s in segs if s[0]]
     out: list[list] = []
-    for i, s in enumerate(merged):
-        is_last_via = s[0] == "via" and all(x[0] != "via" for x in merged[i + 1:])
-        if s[0] == "via" and s[2] < SHORT_CONNECTOR_M and not is_last_via and out:
+    for i, s in enumerate(named):
+        is_last = i == len(named) - 1
+        if s[1] < SHORT_CONNECTOR_M and not is_last and out:
             continue
-        if out and out[-1][0] == s[0] and out[-1][1] == s[1]:
-            out[-1][2] += s[2]
+        if out and out[-1][0] == s[0]:
+            out[-1][1] += s[1]
+        else:
+            out.append(list(s))
+    return [s[0] for s in out]
+
+
+def _legs(edges: list[TaxiEdge], lengths: list[float], ap: Airport | None,
+          dep_runway: str | None) -> tuple[list[TaxiLeg], int]:
+    """Split the path at runway protected areas.
+
+    A run of protected edges that reaches the departure runway is the final hold short
+    point (placed at the *start* of the run, so the aircraft never enters another
+    runway's protected area unannounced). A run that crosses another runway becomes a
+    clearance limit "hold short runway X"; the next leg starts with "cross runway X".
+    Returns (legs, index of the final hold point in the edge list).
+    """
+    legs: list[TaxiLeg] = []
+    segs: list[list] = []
+    cross: str | None = None
+    i = 0
+    while i < len(edges):
+        e = edges[i]
+        if not _protected(e):
+            segs.append([e.name.strip(), lengths[i]])
+            i += 1
             continue
-        # "A, cross 15/33, A" -> "A, cross 15/33"
-        if s[0] == "via" and len(out) >= 2 and out[-1][0] == "cross" and out[-2][1] == s[1]:
-            continue
-        out.append(s)
-    crossings = [s[1] for s in out if s[0] == "cross"]
-    steps = [(s[0], s[1]) for s in out]
-    return steps, crossings, hold_idx
+        k = i
+        while k < len(edges) and _protected(edges[k]):
+            k += 1
+        run = edges[i:k]
+        crossed: list[str] = []
+        for r in run:
+            if r.kind == "runway" and not (dep_runway and _runway_matches(r.name, dep_runway)):
+                name = r.name.strip()
+            elif r.kind != "runway" and ap is not None:
+                # a zone alone also covers parallel taxiways: require cutting the centreline
+                name = _cut_runway(ap, r)
+                if name and dep_runway and _runway_matches(name, dep_runway):
+                    name = None
+            else:
+                name = None
+            if name and name not in crossed:
+                crossed.append(name)
+        reaches_dep = dep_runway is not None and (k == len(edges) or any(
+            (r.kind == "runway" and _runway_matches(r.name, dep_runway)) or dep_runway in r.zone_runways()
+            for r in run))
+        if crossed:
+            legs.append(TaxiLeg(_fold_names(segs), crossed[0], cross, i))
+            cross, segs = crossed[0], []
+        elif reaches_dep:
+            legs.append(TaxiLeg(_fold_names(segs), dep_runway, cross, i))
+            return legs, i
+        for j in range(i, k):  # taxiway names inside the protected run still describe the way
+            if edges[j].kind != "runway":
+                segs.append([edges[j].name.strip(), lengths[j]])
+        i = k
+    legs.append(TaxiLeg(_fold_names(segs), dep_runway, cross, len(edges)))
+    return legs, len(edges)
+
+
+def _route_summary(legs: list[TaxiLeg]) -> tuple[list[tuple[str, str]], list[str]]:
+    steps: list[tuple[str, str]] = []
+    for leg in legs:
+        if leg.cross:
+            steps.append(("cross", leg.cross))
+        for t in leg.taxiways:
+            if not (steps and steps[-1] == ("via", t)) and not (
+                    len(steps) >= 2 and steps[-1][0] == "cross" and steps[-2] == ("via", t)):
+                steps.append(("via", t))
+    return steps, [leg.cross for leg in legs if leg.cross]
 
 
 def route_to_runway(ap: Airport, lat: float, lon: float, runway_end: str,
@@ -208,13 +257,20 @@ def route_to_runway(ap: Airport, lat: float, lon: float, runway_end: str,
     except nx.NetworkXNoPath:
         return TaxiRoute(ok=False, hold_short=runway_end)
     path = path[:-1]
+    entry = g.nodes[path[-1]]
     edges = [g.edges[a, b]["edge"] for a, b in zip(path, path[1:])]
-    steps, crossings, hold_idx = _fold(edges, g, path, runway_end, ap)
+    lengths = [g.edges[a, b]["length"] for a, b in zip(path, path[1:])]
+    legs, hold_idx = _legs(edges, lengths, ap, runway_end)
     nodes = path[: hold_idx + 1]
-    length = sum(g.edges[a, b]["length"] for a, b in zip(nodes, nodes[1:]))
+    steps, crossings = _route_summary(legs)
+    # intersection departure: the runway is entered well away from the threshold
+    intersection = None
+    if distance_m(end.lat, end.lon, entry["lat"], entry["lon"]) > max(300.0, 0.15 * end.length_m):
+        intersection = legs[-1].taxiways[-1] if legs[-1].taxiways else None
     return TaxiRoute(ok=True, taxiways=[n for k, n in steps if k == "via"], hold_short=runway_end,
                      crossings=crossings, steps=steps, nodes=nodes, edges=edges[:hold_idx],
-                     length_m=length, destination=f"runway {runway_end}")
+                     length_m=sum(lengths[:hold_idx]), destination=f"runway {runway_end}",
+                     legs=legs, intersection=intersection)
 
 
 def route_to_point(ap: Airport, lat: float, lon: float, dest_lat: float, dest_lon: float,
@@ -230,10 +286,12 @@ def route_to_point(ap: Airport, lat: float, lon: float, dest_lat: float, dest_lo
     except nx.NetworkXNoPath:
         return TaxiRoute(ok=False, destination=dest_name)
     edges = [g.edges[a, b]["edge"] for a, b in zip(path, path[1:])]
-    steps, crossings, _ = _fold(edges, g, path, None, ap)
-    length = sum(g.edges[a, b]["length"] for a, b in zip(path, path[1:]))
+    lengths = [g.edges[a, b]["length"] for a, b in zip(path, path[1:])]
+    legs, _ = _legs(edges, lengths, ap, None)
+    steps, crossings = _route_summary(legs)
     return TaxiRoute(ok=True, taxiways=[n for k, n in steps if k == "via"], crossings=crossings,
-                     steps=steps, nodes=path, edges=edges, length_m=length, destination=dest_name)
+                     steps=steps, nodes=path, edges=edges, length_m=sum(lengths),
+                     destination=dest_name, legs=legs)
 
 
 def distance_to_route(ap: Airport, route: TaxiRoute, lat: float, lon: float) -> float:

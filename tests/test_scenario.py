@@ -117,6 +117,42 @@ def test_handoff_thanks_and_push_facing(kbtv):
     assert "push and start approved, facing" in out[0].text
 
 
+def test_taxi_with_runway_crossing_in_legs(kbtv):
+    """Live test: from this spot the route to 19 crosses 15/33, but ATC said only
+    'via A, hold short runway 19'. Now: hold short 15 first, then cross on reaching it."""
+    b = Brain(FlightConfig(callsign="DLH4AB", destination="KBOS"), kbtv)
+    m = Monitor(b)
+    p = IntentParser()
+    b.phase, b.runway = Phase.CLEARANCE, "19"
+    here = sim_at(44.471319, -73.153743, 126300)  # wind 150 -> runway 15 is the end in use
+    out = say(b, p, "Lufthansa four alpha bravo request taxi", here)
+    assert "taxi to holding point runway 19 via A, hold short runway 15" in out[0].text
+    assert len(b.route.legs) == 2 and b.route.legs[1].cross == "15/33"
+    say(b, p, "via alpha hold short runway one five", here)
+    assert b.pending is None
+
+    # approaching the 15/33 hold point -> crossing clearance and the next limit
+    lat0, lon0 = b.hold_point()
+    out = m.tick(sim_at(lat0, lon0, 126300, groundspeed_kt=10))
+    assert out and out[0].text == "DLH4AB, cross runway 15, continue via A, hold short runway 19"
+    assert "15/33" in b.cleared_runways
+    assert b.phase == Phase.TAXI_OUT
+
+
+def test_incursion_on_uncleared_crossing_runway(kbtv):
+    b = Brain(FlightConfig(callsign="DLH4AB"), kbtv)
+    m = Monitor(b)
+    b.runway, b.phase = "19", Phase.TAXI_OUT
+    r = kbtv.runway_of("15")
+    lat = (r.ends[0].lat + r.ends[1].lat) / 2
+    lon = (r.ends[0].lon + r.ends[1].lon) / 2
+    out = m._runway_incursion(sim_at(lat, lon, 126300, groundspeed_kt=10))
+    assert out and "not cleared onto runway 15" in out[0].text
+    b.cleared_runways.add("15/33")
+    m._last.clear()
+    assert m._runway_incursion(sim_at(lat, lon, 126300, groundspeed_kt=10)) == []
+
+
 def test_unknown_destination_is_rejected(kbtv):
     class FakeIndex:
         entries = {"KBOS": (), "KBTV": ()}

@@ -38,6 +38,11 @@ def test_normalize_and_slots():
     assert extract_slots("cleared to kilo bravo oscar sierra runway one five")["destination"] == "KBOS"
     # real Whisper output from the live test
     assert extract_slots("Thriving good day, I request IFR clearance to Kila Bravo Oskar Sierra.")["destination"] == "KBOS"
+    for said in ("Lufthansa four Alpha Bravo, request IFR clearance for Kila Bravo Oscar Sierra.",
+                 "Lufthansa four Alpha Bravo, request IFR clearance for Kilo Bravo Oscar Sierra.",
+                 "request ifr to kbos", "cleared to KBOS runway 19"):
+        assert extract_slots(said).get("destination") == "KBOS", said
+    assert "destination" not in extract_slots("cleared for takeoff runway 19")
     s = extract_slots("taxi via golf mike, hold short runway 15")
     assert s["hold_short"] == "15" and s["taxiways"] == ["G", "M"]
     assert extract_slots("flight level three five zero")["flight_level"] == 350

@@ -187,23 +187,28 @@ class Phraseology:
     def startup(self) -> tuple[str, str]:
         return self._out("start up approved", "start up approved")
 
-    def taxi(self, route, runway_end: str, qnh_hpa: float | None = None) -> tuple[str, str]:
-        if route.ok and route.steps:
-            tt, ss = [], []
-            for k, n in route.steps:
-                if k == "cross":
-                    tt.append(f"cross runway {n.split('/')[0]}")
-                    ss.append(f"cross runway {runway(n.split('/')[0])}")
-                else:
-                    tt.append(n)
-                    ss.append(taxiway(n))
-            via_t, via_s = ", ".join(tt), ", ".join(ss)
+    @staticmethod
+    def _via(names: list[str]) -> tuple[str, str]:
+        if not names:
+            return "", ""
+        return " via " + ", ".join(names), " via " + ", ".join(taxiway(n) for n in names)
+
+    def taxi(self, route, runway_end: str, qnh_hpa: float | None = None,
+             hold_word: str | None = None) -> tuple[str, str]:
+        """Taxi clearance for the first leg. hold_word = runway said in "hold short runway X"
+        (the departure runway, or a runway the route crosses: the clearance limit)."""
+        if route.ok and route.legs:
+            leg = route.legs[0]
+            hw = hold_word or runway_end
+            vt, vs = self._via(leg.taxiways)
+            it, is_ = (f", intersection {route.intersection}", f", intersection {taxiway(route.intersection)}") \
+                if route.intersection and len(route.legs) == 1 else ("", "")
             if self.region == "FAA":
-                t = f"runway {runway_end}, taxi via {via_t}"
-                s = f"runway {runway(runway_end)}, taxi via {via_s}"
+                t = f"runway {runway_end}{it}, taxi{vt}, hold short runway {hw}"
+                s = f"runway {runway(runway_end)}{is_}, taxi{vs}, hold short runway {runway(hw)}"
             else:
-                t = f"taxi to holding point runway {runway_end} via {via_t}, hold short runway {runway_end}"
-                s = f"taxi to holding point runway {runway(runway_end)} via {via_s}, hold short runway {runway(runway_end)}"
+                t = f"taxi to holding point runway {runway_end}{it}{vt}, hold short runway {hw}"
+                s = f"taxi to holding point runway {runway(runway_end)}{is_}{vs}, hold short runway {runway(hw)}"
         else:
             t = f"taxi to runway {runway_end} at your discretion, hold short runway {runway_end}"
             s = f"taxi to runway {runway(runway_end)} at your discretion, hold short runway {runway(runway_end)}"
@@ -213,12 +218,34 @@ class Phraseology:
             s += f", {qs}"
         return self._out(t, s)
 
-    def taxi_to_gate(self, route, gate: str) -> tuple[str, str]:
-        if route.ok and route.steps:
-            tt = ", ".join(f"cross runway {n}" if k == "cross" else n for k, n in route.steps)
-            ss = ", ".join(f"cross runway {runway(n.split('/')[0])}" if k == "cross" else taxiway(n)
-                           for k, n in route.steps)
-            return self._out(f"taxi to stand {gate} via {tt}", f"taxi to stand {gate} via {ss}")
+    def taxi_continue(self, leg, cross_word: str, hold_word: str | None, gate: str | None = None,
+                      intersection: str | None = None) -> tuple[str, str]:
+        """Next leg after a hold short: "cross runway 15, continue via A, hold short runway 19"."""
+        vt, vs = self._via(leg.taxiways)
+        t = f"cross runway {cross_word}"
+        s = f"cross runway {runway(cross_word)}"
+        if vt:
+            t += f", continue{vt}"
+            s += f", continue{vs}"
+        if hold_word:
+            if intersection:
+                t += f", intersection {intersection}"
+                s += f", intersection {taxiway(intersection)}"
+            t += f", hold short runway {hold_word}"
+            s += f", hold short runway {runway(hold_word)}"
+        elif gate:
+            t += f" to stand {gate}"
+            s += f" to stand {gate}"
+        return self._out(t, s)
+
+    def taxi_to_gate(self, route, gate: str, hold_word: str | None = None) -> tuple[str, str]:
+        if route.ok and route.legs:
+            vt, vs = self._via(route.legs[0].taxiways)
+            t, s = f"taxi to stand {gate}{vt}", f"taxi to stand {gate}{vs}"
+            if hold_word:
+                t += f", hold short runway {hold_word}"
+                s += f", hold short runway {runway(hold_word)}"
+            return self._out(t, s)
         return self._out(f"taxi to stand {gate} at your discretion",
                          f"taxi to stand {gate} at your discretion")
 

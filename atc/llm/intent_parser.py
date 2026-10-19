@@ -103,6 +103,28 @@ def nato_spelling(words: list[str]) -> str | None:
     return "".join(letters) if all(letters) else None
 
 
+_DEST_KEY = re.compile(r"\b(?:cleared|clearance|ifr|destination|flight plan)\b")
+_NOT_ICAO = {"TAXI", "PUSH", "LAND", "FROM", "WITH", "HOLD", "TAKE", "LINE", "THAT", "THE", "AND",
+             "YOU", "FOR", "VIA", "NOW", "OUR", "TO", "IFR"}
+
+
+def _destination(t: str) -> str | None:
+    """Destination after 'clearance/cleared/ifr ... to|for': NATO-spelled (4 words) or a 3-4 letter code."""
+    for k in _DEST_KEY.finditer(t):
+        words = t[k.end():].split()
+        # skip up to two filler words: "clearance to", "ifr clearance for", "cleared to"
+        for skip in range(0, 3):
+            rest = words[skip:]
+            if len(rest) >= 4 and (spelled := nato_spelling(rest[:4])):
+                return spelled
+            if rest and re.fullmatch(r"[a-z]{3,4}", rest[0]) and rest[0].upper() not in _NOT_ICAO \
+                    and (skip == 0 or words[skip - 1] in ("to", "for", "clearance")):
+                return rest[0].upper()
+            if not rest or rest[0] not in ("to", "for", "clearance", "ifr"):
+                break
+    return None
+
+
 def extract_slots(text: str) -> dict:
     """Regex slot extraction from a normalised transmission."""
     t = normalize(text)
@@ -130,16 +152,9 @@ def extract_slots(text: str) -> dict:
         s["cleared_land"] = True
     if "line up" in t or "lining up" in t or "position and hold" in t:
         s["line_up"] = True
-    dest_re = r"\b(?:cleared|clearance|ifr|destination|flight plan)(?: \w+)?(?: to)? "
-    m = re.search(dest_re + r"((?:[a-z]+ ){3}[a-z]+)\b", t)
-    spelled = nato_spelling(m.group(1).split()) if m else None
-    if spelled:
-        s["destination"] = spelled  # "kilo bravo oscar sierra", also Whisper's "kila ... oskar"
-    elif m := re.search(dest_re + r"([a-z]{3,4})\b", t):  # ICAO, or FAA 3-letter ("bos")
-        cand = m.group(1).upper()
-        if cand not in ("TAXI", "PUSH", "LAND", "FROM", "WITH", "HOLD", "TAKE", "LINE", "THAT",
-                        "THE", "AND", "YOU", "FOR", "VIA", "NOW", "OUR"):
-            s["destination"] = cand
+    dest = _destination(t)
+    if dest:
+        s["destination"] = dest
     if m := re.search(r"(?:information|info) ([a-z]+)\b", t):
         s["information"] = NATO_WORDS.get(m.group(1), m.group(1)[:1].upper())
     # taxiways after "via": NATO words / letter+digits until a keyword

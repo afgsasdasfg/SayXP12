@@ -89,6 +89,8 @@ class Brain:
         self.alt_captured = False
         self.route: taxi.TaxiRoute | None = None
         self.route_joined = False
+        self.leg_idx = 0                       # current clearance limit in route.legs
+        self.cleared_runways: set[str] = set()  # runways cleared to cross on this route
         self.cleared_takeoff = False
         self.cleared_land = False
         self.pending: Pending | None = None
@@ -359,13 +361,48 @@ class Brain:
         if self.runway is None:
             self.runway = self._select_dep_runway()
         cls = taxi.aircraft_class(s.acf_icao or "A320")
-        self.route = taxi.route_to_runway(self.dep, s.lat, s.lon, self.runway, cls)
-        self.route_joined = False
+        self._new_route(taxi.route_to_runway(self.dep, s.lat, s.lon, self.runway, cls))
         if not self.route.ok:
             log.warning("taxi route not found, using fallback instruction")
-        tx = self._tx(Position.GROUND, self.phr.taxi(self.route, self.runway, s.qnh_hpa), True)
+        hold = self._hold_word(self.route.legs[0].hold_short) if self.route.legs else self.runway
+        log.info("taxi route legs: %s", [(lg.taxiways, lg.hold_short, lg.cross) for lg in self.route.legs])
+        tx = self._tx(Position.GROUND, self.phr.taxi(self.route, self.runway, s.qnh_hpa, hold), True)
         self._set_phase(Phase.TAXI_OUT)
-        self._expect(tx, {"hold_short": self.runway}, {"hold_short"})
+        self._expect(tx, {"hold_short": hold}, {"hold_short"})
+        return [tx]
+
+    def _new_route(self, route: taxi.TaxiRoute | None) -> None:
+        self.route = route
+        self.leg_idx = 0
+        self.route_joined = False
+        self.cleared_runways = set()
+
+    def _hold_word(self, runway_name: str | None) -> str | None:
+        """'15/33' -> the end in use (most headwind); a single end is returned as is."""
+        if not runway_name or "/" not in runway_name:
+            return runway_name
+        from ..world.runways import wind_components
+        ends = [self.field.runway_end(n) for n in runway_name.split("/")]
+        ends = [e for e in ends if e is not None]
+        if not ends:
+            return runway_name.split("/")[0]
+        return max(ends, key=lambda e: wind_components(e, self.sim.wind_dir_true, self.sim.wind_speed_kt)[0]).name
+
+    def has_next_leg(self) -> bool:
+        return bool(self.route and self.route.ok and self.leg_idx < len(self.route.legs) - 1)
+
+    def continue_taxi(self) -> list[Transmission]:
+        """At a crossing hold point: clear the crossing and the next leg."""
+        self.leg_idx += 1
+        leg = self.route.legs[self.leg_idx]
+        self.cleared_runways.add(leg.cross)
+        last = self.leg_idx == len(self.route.legs) - 1
+        hold = self._hold_word(leg.hold_short)
+        tx = self._tx(Position.GROUND, self.phr.taxi_continue(
+            leg, self._hold_word(leg.cross), hold, gate=self.gate if self.phase == Phase.TAXI_IN else None,
+            intersection=self.route.intersection if last else None), bool(hold))
+        if hold:
+            self._expect(tx, {"hold_short": hold}, {"hold_short"})
         return [tx]
 
     def _taxi_in(self) -> list[Transmission]:
@@ -377,10 +414,13 @@ class Brain:
             self.route = None
             return [self._tx(Position.GROUND, self.phr.custom("taxi to parking at your discretion"))]
         self.gate = gate.name
-        self.route = taxi.route_to_point(ap, s.lat, s.lon, gate.lat, gate.lon, cls, gate.name)
-        self.route_joined = False
+        self._new_route(taxi.route_to_point(ap, s.lat, s.lon, gate.lat, gate.lon, cls, gate.name))
         self._set_phase(Phase.TAXI_IN)
-        return [self._tx(Position.GROUND, self.phr.taxi_to_gate(self.route, gate.name))]
+        hold = self._hold_word(self.route.legs[0].hold_short) if self.route.legs else None
+        tx = self._tx(Position.GROUND, self.phr.taxi_to_gate(self.route, gate.name, hold), bool(hold))
+        if hold:
+            self._expect(tx, {"hold_short": hold}, {"hold_short"})
+        return [tx]
 
     def _on_tower(self, it: PilotIntent):
         T = Position.TOWER
@@ -588,14 +628,18 @@ class Brain:
         self.fc.destination = None
         self.runway = self.arr_runway = self.sid = self.squawk = None
         self.assigned_alt = None
-        self.route = None
+        self._new_route(None)
         self.cleared_takeoff = self.cleared_land = False
         self.pending = None
         self._set_phase(Phase.PARKED)
 
     def hold_point(self) -> tuple[float, float] | None:
+        """Hold short point of the current leg (the final one is the end of the route)."""
         if self.route and self.route.ok and self.route.nodes:
-            n = self.field.nodes.get(self.route.nodes[-1])
+            idx = len(self.route.nodes) - 1
+            if self.route.legs:
+                idx = min(self.route.legs[self.leg_idx].end, idx)
+            n = self.field.nodes.get(self.route.nodes[idx])
             if n:
                 return n.lat, n.lon
         return None
