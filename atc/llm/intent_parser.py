@@ -168,7 +168,9 @@ def classify_rules(text: str) -> str:
         return "radio_check"
     if re.search(r"\b(clearance|cleared to [a-z]{4}|ifr to|request ifr)\b", t) and "request" in t:
         return "request_clearance"
-    if re.search(r"\bpush ?back\b|\brequest(?:ing)? push\b|\bpush and start\b", t) and "approved" not in t:
+    if re.search(r"\bapprov", t) and "request" not in t:
+        return "acknowledge"  # "push and start approved, DLH4AB" (Whisper: "approve")
+    if re.search(r"\bpush ?back\b|\brequest(?:ing)? push\b|\bpush (?:and )?start\b", t):
         return "request_pushback"
     if re.search(r"\b(request(?:ing)? start|ready (?:to|for) start)", t):
         return "request_startup"

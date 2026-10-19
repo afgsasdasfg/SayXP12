@@ -52,6 +52,8 @@ def test_rule_classifier():
     assert classify_rules("runway 15 cleared for takeoff, DLH4AB") == "readback"
     assert classify_rules("Departure, DLH4AB with you passing 2000") == "check_in"
     assert classify_rules("say again") == "say_again"
+    assert classify_rules("Push start to approve for Alpha Bravo.") == "acknowledge"
+    assert classify_rules("Lufthansa four Bravo, request push and start.") == "request_pushback"
     # real Whisper output from the first live test
     assert classify_rules("Living good day, Lufthansa four Alpha Bravo, ready check.") == "radio_check"
     assert classify_rules("delivery good deal, Lufthansa four Alpha Bravo, ready check.") == "radio_check"
