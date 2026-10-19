@@ -178,6 +178,21 @@ def test_taxi_overspeed_and_confirm_readback(kbtv):
     assert said == ["DLH4AB, reduce taxi speed"]
 
 
+def test_flight_level_readbacks_from_live_test(kbtv):
+    b = Brain(FlightConfig(callsign="DLH4AB"), kbtv)
+    p = IntentParser()
+    s = sim_at(44.47, -73.15, 121100, on_ground=False, agl_ft=3000, altitude_ft=3300)
+    for said in ("Climbing flight level, 1, 0, 0, Lufthansa Alpha four Alpha Bravo.",
+                 "Radar contact, flight level, climbing flight level, 100, Lufthansa four Alpha Bravo.",
+                 "Roger contact, climb flight level, one, zero, zero, Lufthansa four Alpha Bravo.",
+                 "Radar contact, climb, flight level, 100, Lufthansa four Alpha Bravo."):
+        b.phase, b.assigned_alt = Phase.DEPARTURE, 10000
+        tx = b._tx(Position.DEPARTURE, b.phr.radar_contact(10000), True)
+        b._expect(tx, {"altitude": 10000}, set())
+        assert say(b, p, said, s) == [], said
+        assert b.pending is None
+
+
 def test_unknown_destination_is_rejected(kbtv):
     class FakeIndex:
         entries = {"KBOS": (), "KBTV": ()}

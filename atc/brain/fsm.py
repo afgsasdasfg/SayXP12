@@ -196,8 +196,8 @@ class Brain:
         wrong: list[tuple[str, str, str]] = []
         for slot, val in p.expected.items():
             got = rb.get(slot)
-            if slot == "altitude" and got is None and rb.get("flight_level"):
-                got = int(rb["flight_level"]) * 100
+            if slot == "altitude" and rb.get("flight_level"):
+                got = int(rb["flight_level"]) * 100  # a stated flight level wins over a stray "altitude"
             if got is None:
                 if slot in p.required or (self.fc.strict_readback and slot != "frequency"):
                     wrong.append(self._label(slot, val))
@@ -262,7 +262,9 @@ class Brain:
             return [self._tx(pos, self.phr.say_again())]
         if intent.intent == "radio_check":
             return [self._tx(pos, self.phr.radio_check(self.station_name(pos)))]
-        if self.pending and pos == self.pending.position and intent.intent in ("readback", "acknowledge"):
+        if self.pending and pos == self.pending.position and (
+                intent.intent in ("readback", "acknowledge") or self._mentions_expected(intent)):
+            # "climbing flight level 100" is a readback, whatever the classifier called it
             return self._check_readback(intent)
         if intent.intent in ("readback", "acknowledge"):
             self.pending = None
@@ -543,6 +545,16 @@ class Brain:
             if any(self.fc.first_fix.upper() in fixes for fixes in p.transitions.values()):
                 return p.ident
         return None
+
+    def _mentions_expected(self, it: PilotIntent) -> bool:
+        """The call repeats values of the instruction we are waiting a readback for."""
+        if it.intent not in ("check_in", "report_position", "request_climb", "request_descent", "other"):
+            return False
+        exp = set(self.pending.expected)
+        got = set(it.readback)
+        if "altitude" in exp and "flight_level" in got:
+            got.add("altitude")
+        return bool(exp & got)
 
     def _acknowledges_handoff(self, it: PilotIntent, pos: Position) -> bool:
         """Pilot reads back another station's frequency on this one = acknowledging a handoff."""

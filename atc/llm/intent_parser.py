@@ -139,10 +139,12 @@ def extract_slots(text: str) -> dict:
         s["squawk"] = m.group(1)
     if m := re.search(r"flight level (\d{2,3})\b", t):
         s["flight_level"] = int(m.group(1))
-    if m := re.search(r"(?:climb|climbing|descend|descending|maintain|maintaining|passing|level|initial|altitude)"
-                      r"(?: and maintain)?(?: to)? (\d{3,5})(?: feet| ft)?\b", t):
+    # altitude in feet; a flight level is not an altitude ("flight level 100" != 100 ft)
+    t_alt = re.sub(r"flight level \d{2,3}", " ", t)
+    if m := re.search(r"(?:climb|climbing|descend|descending|maintain|maintaining|passing|initial|altitude)"
+                      r"(?: and maintain)?(?: to)? (\d{3,5})(?: feet| ft)?\b", t_alt):
         s["altitude"] = int(m.group(1))
-    elif m := re.search(r"\b(\d{3,5}) (?:feet|ft)\b", t):
+    elif m := re.search(r"\b(\d{3,5}) (?:feet|ft)\b", t_alt):
         s["altitude"] = int(m.group(1))
     if m := re.search(r"\b0?(1[1-3]\d\.\d{1,3})\b", t):  # Whisper: "011 8 decimals free" -> 0118.3
         s["frequency"] = m.group(1)
