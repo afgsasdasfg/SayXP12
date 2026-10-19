@@ -100,18 +100,31 @@ class STT:
 
     def load(self):
         if self._model is None:
-            from faster_whisper import WhisperModel
             if self.device != "cpu":
                 _add_cuda_dll_dirs()
             log.info("loading whisper %s (%s)...", self.model_name, self.device)
-            try:
-                self._model = WhisperModel(self.model_name, device=self.device,
-                                           compute_type=self.compute_type, download_root=self.download_root)
-            except Exception as e:  # noqa: BLE001 - e.g. CUDA libs missing -> CPU
-                log.warning("whisper on %s failed (%s), using CPU int8", self.device, e)
-                self._model = WhisperModel(self.model_name, device="cpu", compute_type="int8",
-                                           download_root=self.download_root)
+            self._model = self._create(self.device, self.compute_type)
         return self._model
+
+    def _create(self, device: str, compute_type: str):
+        from faster_whisper import WhisperModel
+
+        def make(dev, ct, local_only):
+            return WhisperModel(self.model_name, device=dev, compute_type=ct,
+                                download_root=self.download_root, local_files_only=local_only)
+
+        for dev, ct in ((device, compute_type), ("cpu", "int8")):
+            try:
+                # cached copy first: the online revision check costs ~30 s through a VPN
+                try:
+                    return make(dev, ct, True)
+                except (FileNotFoundError, ValueError, OSError):
+                    return make(dev, ct, False)
+            except Exception as e:  # noqa: BLE001 - e.g. CUDA libs missing -> CPU
+                if dev == "cpu":
+                    raise
+                log.warning("whisper on %s failed (%s), using CPU int8", dev, e)
+        raise RuntimeError("unreachable")
 
     def _run(self, audio: np.ndarray, prompt: str) -> str:
         segments, _ = self.load().transcribe(audio, language="en", beam_size=5, initial_prompt=prompt or None,
