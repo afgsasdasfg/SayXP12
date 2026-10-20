@@ -12,6 +12,8 @@ from atc.llm.intent_parser import IntentParser
 from atc.state import Phase, Position, SimState
 from atc.world.cifp import final_for_runway, parse_finals
 
+import pytest
+
 from conftest import FIX
 
 CTR = 127900
@@ -49,6 +51,16 @@ def readback(b, tx, s):
 def airborne(m, s):
     for _ in range(3):
         m.tick(s)
+
+
+@pytest.fixture
+def xp_root(tmp_path):
+    """A fake X-Plane folder with the real CIFP files of KBTV and UUEE (X-Plane 12 default data)."""
+    d = tmp_path / "Resources" / "default data" / "CIFP"
+    d.mkdir(parents=True)
+    for f in (FIX / "CIFP").glob("*.dat"):
+        (d / f.name).write_bytes(f.read_bytes())
+    return tmp_path
 
 
 class OneAirportIndex:
