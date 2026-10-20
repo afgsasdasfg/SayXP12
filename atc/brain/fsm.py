@@ -586,7 +586,7 @@ class Brain:
         f = self.final
         x, y = f.frame(self.sim.lat, self.sim.lon)
         v = vectors.first_vector(f, x, y)
-        alt = max(f.faf_alt, -(-(f.faf_alt + 1000) // 1000) * 1000)   # FAF + 1000, up to the next thousand
+        alt = -(-(f.faf_alt + 1000) // 500) * 500   # FAF + 1000, up to the next 500
         if self.sim.altitude_ft < alt + 200:
             alt = None   # already low enough: keep what was assigned
         self.vector = v
