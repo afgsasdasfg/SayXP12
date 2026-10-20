@@ -105,6 +105,7 @@ class Brain:
         self.hdg_captured = False
         self.route: taxi.TaxiRoute | None = None
         self.route_joined = False
+        self.missed_turn = False               # "missed your turn, hold position and advise" outstanding
         self.leg_idx = 0                       # current clearance limit in route.legs
         self.cleared_runways: set[str] = set()  # runways cleared to cross on this route
         self.cleared_takeoff = False
@@ -317,6 +318,10 @@ class Brain:
         if pos == Position.DELIVERY and self.dest_choices and (code := self._chosen_destination(intent)):
             intent = PilotIntent("request_clearance", callsign=intent.callsign, raw_text=intent.raw_text,
                                  data={"destination": code})
+        if (self.missed_turn and pos == Position.GROUND and not intent.unclear
+                and self.phase in (Phase.TAXI_OUT, Phase.TAXI_IN)
+                and intent.intent not in ("say_again", "radio_check", "request_qnh")):
+            return self._reroute()  # "holding position" / "request taxi": the pilot advises
         if intent.unclear or intent.intent == "other":
             return [self._tx(pos, self.phr.say_again())]
         if intent.intent == "say_again":
@@ -469,7 +474,7 @@ class Brain:
         if self.phase in (Phase.TAXI_IN, Phase.LANDING) or (
                 self.phase in (Phase.APPROACH, Phase.ARRIVAL) and self.sim.on_ground):
             if it.intent in ("request_taxi", "check_in", "report_position"):
-                return self._taxi_in()
+                return self._taxi_in(keep_gate=self.route is not None)
             return None
         if it.intent == "request_clearance":
             dl = self.freq_of(Position.DELIVERY)
@@ -506,10 +511,17 @@ class Brain:
         self._expect(tx, {"hold_short": hold}, {"hold_short"})
         return [tx]
 
+    def _reroute(self) -> list[Transmission]:
+        """After a missed turn: a new route from where the aircraft is now, same destination."""
+        log.info("missed turn: new taxi route from %.5f %.5f", self.sim.lat, self.sim.lon)
+        self.pending = None
+        return self._taxi_in(keep_gate=True) if self.phase == Phase.TAXI_IN else self._taxi_out()
+
     def _new_route(self, route: taxi.TaxiRoute | None) -> None:
         self.route = route
         self.leg_idx = 0
         self.route_joined = False
+        self.missed_turn = False
         self.cleared_runways = set()
 
     def _hold_word(self, runway_name: str | None) -> str | None:
@@ -540,10 +552,11 @@ class Brain:
             self._expect(tx, {"hold_short": hold}, {"hold_short"})
         return [tx]
 
-    def _taxi_in(self) -> list[Transmission]:
+    def _taxi_in(self, keep_gate: bool = False) -> list[Transmission]:
         s = self.sim
         ap = self.field
-        gate = self._pick_gate(ap)
+        gate = next((g for g in ap.gates if g.name == self.gate), None) if keep_gate else None
+        gate = gate or self._pick_gate(ap)
         cls = taxi.aircraft_class(self.acf_type)
         if gate is None:
             self.route = None
@@ -1175,6 +1188,8 @@ class Brain:
     def update(self, sim: SimState) -> None:
         self.sim = sim
         ev = self.tracker.update(sim)
+        if ev.took_off:
+            self._new_route(None)  # the taxi-out route must not be checked at the destination
         if ev.took_off and self.phase in (Phase.PARKED, Phase.CLEARANCE, Phase.PUSH_START,
                                           Phase.TAXI_OUT, Phase.HOLDING):
             self._set_phase(Phase.TAKEOFF)  # departed without clearance; carry on

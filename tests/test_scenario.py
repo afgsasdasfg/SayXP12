@@ -789,3 +789,40 @@ def test_departure_request_direct_ends_vectors(ulli):
     out = say(b, p, "Departure, DLH4AB request direct to ABUBA", air(59.7, 30.3, ULLI_DEP, 6000, **wx()))
     assert out[0].position == Position.DEPARTURE and "proceed direct ABUBA" in out[0].text
     assert b.assigned_hdg is None
+
+
+def test_missed_turn_then_new_route_to_the_same_stand(ulli, uuee):
+    """Live UUEE: 'missed your turn, hold position and advise' -> 'holding position' got silence."""
+    from atc.world.aptdat import distance_m
+    from atc.world.taxi import distance_to_route
+    b, m = _arrival_brain(ulli, uuee)
+    b.phase = Phase.LANDING
+    b.route = object()  # a stale taxi-out route left from the departure
+    td = uuee.runway_end("24L")
+    ticks(m, sim_at(td.lat - 0.001, td.lon - 0.003, UUEE_TWR, groundspeed_kt=130, **wx()))
+    out = ticks(m, sim_at(*UUEE_VACATE, UUEE_TWR, groundspeed_kt=15, **wx()), 1)
+    assert any("contact ground" in t.text for t in out) and b.route is None
+    p = IntentParser()
+    out = say(b, p, "Ground, DLH4AB vacated runway 24 left, request taxi to stand",
+              sim_at(*UUEE_VACATE, UUEE_GND, **wx()))
+    stand, route = b.gate, b.route
+    assert "taxi to stand" in out[0].text and route.ok
+    b.pending = None
+    # on the route, then well away from it at a node elsewhere on the field
+    n = uuee.nodes[route.nodes[1]]
+    assert not any("missed" in t.text for t in m.tick(sim_at(n.lat, n.lon, UUEE_GND, groundspeed_kt=10, **wx())))
+    assert b.route_joined
+    b.pending = None
+    off = next(x for x in uuee.nodes.values()
+               if 150 < distance_to_route(uuee, route, x.lat, x.lon) < 400
+               and distance_m(x.lat, x.lon, *UUEE_VACATE) < 1500)
+    out = m.tick(sim_at(off.lat, off.lon, UUEE_GND, groundspeed_kt=10, **wx()))
+    assert any("missed your turn, hold position and advise" in t.text for t in out)
+    assert not any("missed" in t.text for t in m.tick(sim_at(off.lat, off.lon, UUEE_GND, groundspeed_kt=10, **wx())))
+    # the pilot reads back the hold -> a new route from here to the same stand
+    out = say(b, p, "Aeroflot 51, hold in position", sim_at(off.lat, off.lon, UUEE_GND, **wx()))
+    assert out and f"taxi to stand {stand}" in out[0].text, out
+    assert b.gate == stand and b.route is not route and not b.missed_turn
+    assert distance_to_route(uuee, b.route, off.lat, off.lon) < 60
+    for text in ("Aeroflot 51, holding position", "DLH4AB request new route"):
+        assert not p.parse_rules(text).unclear, text

@@ -390,6 +390,8 @@ def classify_rules(text: str) -> str:
         return "request_pushback"
     if re.search(r"\b((?:request(?:ing)?|rest) start|ready (?:to|for) start)", t):  # Whisper: "rest start"
         return "request_startup"
+    if re.search(r"\brequest(?:ing)? (?:a )?new (?:taxi )?(?:route|routing|instructions)\b|\breturn to (?:the )?route\b", t):
+        return "request_taxi"  # after "missed your turn, hold position and advise"
     if re.search(r"\b(request(?:ing)? taxi|ready (?:to|for) taxi|taxi to (?:the )?(?:gate|stand|parking)|request taxi)\b", t):
         return "request_taxi"
     if re.search(r"\bready (?:for )?(?:departure|take ?off)\b|\bholding short.*ready\b|\bready at\b", t):
@@ -416,6 +418,8 @@ def classify_rules(text: str) -> str:
         return "readback"  # "right heading 330, DLH4AB" (vectors to final)
     if re.search(r"\b(with you|checking in|good (morning|afternoon|evening|day)|passing|climbing|descending|level)\b", t):
         return "check_in"
+    if re.search(r"\bhold(?:ing)? (?:in )?position\b", t):
+        return "acknowledge"  # "holding position" ("hold in position" from Whisper)
     if re.search(r"\b(roger|wilco|copy|will do)\b", t):
         return "acknowledge"
     return "other"

@@ -198,7 +198,8 @@ class Monitor:
         if d < ROUTE_JOIN_M:
             b.route_joined = True
             return []
-        if b.route_joined and d > ROUTE_LOST_M and self._ready("missed_turn", 60):
+        if b.route_joined and not b.missed_turn and d > ROUTE_LOST_M and self._ready("missed_turn", 60):
+            b.missed_turn = True  # the next call from the pilot gets a new route
             return [b._tx(Position.GROUND, b.phr.missed_turn())]
         return []
 
@@ -246,6 +247,7 @@ class Monitor:
             return []
         b._set_phase(Phase.TAXI_IN)
         b.pending = None
+        b._new_route(None)  # no taxi route until Ground gives one
         gnd = b.freq_of(Position.GROUND)
         if gnd == b.freq_of(Position.TOWER):
             return b._taxi_in()
