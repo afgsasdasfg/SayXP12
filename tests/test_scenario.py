@@ -443,4 +443,4 @@ def test_vatsim_first_call_sets_callsign_and_stand(kbtv):
     out = say(b, p, "Burlington Delivery, good day, A320 Lufthansa four alpha bravo on stand 1, "
                     "request IFR clearance to KBOS", sim_at(44.47, -73.15, DL))
     assert out[0].text.startswith("DLH4AB")
-    assert b.gate == "1"
+    assert getattr(b, "stand", None) == "1"  # departure stand; b.gate is the arrival stand
