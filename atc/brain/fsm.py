@@ -303,6 +303,8 @@ class Brain:
             return [self._tx(pos, self.phr.say_again())]
         if intent.intent == "radio_check":
             return [self._tx(pos, self.phr.radio_check(self.station_name(pos)))]
+        if intent.intent == "request_qnh":
+            return [self._tx(pos, self.phr.custom(*self.phr.qnh(self.sim.qnh_hpa)))]
         if self.pending and pos == self.pending.position and (
                 intent.intent in ("readback", "acknowledge") or self._mentions_expected(intent)):
             # "climbing flight level 100" is a readback, whatever the classifier called it

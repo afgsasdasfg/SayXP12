@@ -32,6 +32,7 @@ INTENTS = [
     "report_position",
     "say_again",            # pilot asks ATC to repeat
     "radio_check",          # "radio check, how do you read"
+    "request_qnh",          # "request QNH" / "say altimeter"
     "acknowledge",          # roger / wilco without readback
     "unable",
     "other",
@@ -351,6 +352,8 @@ def classify_rules(text: str) -> str:
         return "radio_check"
     if re.search(r"\b(clearance|cleared to [a-z]{4}|ifr to|request ifr)\b", t) and "request" in t:
         return "request_clearance"
+    if re.search(r"\b(?:request(?:ing)?|say|confirm) (?:the )?(?:qnh|q n h|altimeter|pressure)\b", t):
+        return "request_qnh"
     if re.search(r"\bapprov", t) and "request" not in t:
         return "acknowledge"  # "push and start approved, DLH4AB" (Whisper: "approve")
     if re.search(r"\bpush\b.*\bfacing (?:north|east|south|west)", t) and "request" not in t:

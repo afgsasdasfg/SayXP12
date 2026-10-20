@@ -686,3 +686,13 @@ def test_push_and_start_whisper_variants(ulli):
     out = say(b, p, "Ground negative, Aeroflot 51, request push and sort.", s)
     assert "push and start approved" in out[0].text and b.phase == Phase.PUSH_START
     assert say(b, p, "Push and start the proof facing south, Aeroflot 51.", s) == []
+
+
+def test_qnh_request_gets_only_qnh(ulli):
+    """Live test ULLI: 'request QNH' on Ground got a taxi clearance."""
+    b = Brain(FlightConfig(callsign="AFL51"), ulli)
+    b.phase = Phase.CLEARANCE
+    stand = next(g for g in ulli.gates if g.name == "101A")
+    out = say(b, IntentParser(), "Ground, good day, request QNH, Aeroflot 51.",
+              sim_at(stand.lat, stand.lon, 121700, **wx(qnh_hpa=1036)))
+    assert out[0].text == "AFL51, QNH 1036" and b.phase == Phase.CLEARANCE and b.route is None
