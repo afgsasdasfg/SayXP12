@@ -45,6 +45,7 @@ PHASE_POSITION = {
     Phase.LANDING: Position.TOWER,
     Phase.TAXI_IN: Position.GROUND,
 }
+STEP_DOWN_FT = 2000   # vectors: next descent once the 3° path is this far below the assigned altitude
 ARRIVAL_PHASES = (Phase.ARRIVAL, Phase.APPROACH, Phase.LANDING, Phase.TAXI_IN)
 
 
@@ -880,7 +881,7 @@ class Brain:
             vectors.faf_distance_from_altitude(faf_alt, ap.elevation_ft)
         log.info("final %s runway %s: course %03.0f, FAF %s %d ft %.1f NM", self.appr_kind, self.arr_runway,
                  course_mag, fa.faf if fa else "-", faf_alt, faf_dist)
-        return vectors.Final(end.lat, end.lon, end.heading_true, course_mag, faf_dist, faf_alt)
+        return vectors.Final(end.lat, end.lon, end.heading_true, course_mag, faf_dist, faf_alt, ap.elevation_ft)
 
     def _start_vectors(self, pos: Position) -> list[Transmission]:
         self.final = self._build_final()
@@ -892,7 +893,7 @@ class Brain:
         f = self.final
         x, y = f.frame(self.sim.lat, self.sim.lon)
         v = vectors.first_vector(f, x, y)
-        alt = -(-(f.faf_alt + 1000) // 500) * 500   # FAF + 1000, up to the next 500
+        alt = vectors.descent_target(f, v, x, y)
         if self.sim.altitude_ft < alt + 200:
             alt = None   # already low enough: keep what was assigned
         self.vector = v
@@ -936,7 +937,8 @@ class Brain:
             return self._clear_approach(nv)
         if nv:
             self.vector = nv
-            alt = f.faf_alt if nv.leg == "base" and (self.assigned_alt or 0) > f.faf_alt else None
+            alt = vectors.descent_target(f, nv, x, y)
+            alt = alt if (self.assigned_alt or 0) > alt else None
             turn = self._turn_direction(nv.heading)
             self._assign_heading(nv.heading)
             expected: dict = {"heading": nv.heading}
@@ -948,24 +950,38 @@ class Brain:
             self._expect(tx, expected, set())
             return [tx]
         if v.leg == "intercept" and (abs(y) <= 2 * vectors.INTERCEPT_TURN_NM or x <= f.gate_nm + 8):
-            return self._clear_approach(None)   # straight in: already on the intercept heading
+            return self._clear_approach(None, x, y)   # straight in: already on the intercept heading
+        alt = vectors.descent_target(f, v, x, y)
+        if (self.assigned_alt or self.sim.altitude_ft) - alt >= STEP_DOWN_FT:
+            self._assign_alt(alt)   # step down along the 3° path, STEP_DOWN_FT or more at a time
+            tx = self._tx(self.vector_pos, self.phr.climb(alt, "descend"), True)
+            tx.proactive = True
+            self._expect(tx, {"altitude": alt}, set())
+            return [tx]
         return []
 
-    def _clear_approach(self, nv: vectors.Vector | None) -> list[Transmission]:
+    def _clear_approach(self, nv: vectors.Vector | None, x: float | None = None,
+                        y: float | None = None) -> list[Transmission]:
         f = self.final
         hdg = turn = None
         if nv is not None:
             self.vector = nv
             hdg, turn = nv.heading, self._turn_direction(nv.heading)
+        if x is None:
+            x, y = f.frame(self.sim.lat, self.sim.lon)
+        # "maintain ... until established": below the glideslope where the localizer is joined,
+        # never a climb over what is already assigned
+        alt = vectors.intercept_altitude(f, vectors.join_distance(f, self.vector, x, y))
+        alt = max(f.faf_alt, min(alt, self.assigned_alt or alt))
         self.appr_cleared = True
         self._assign_heading(None)   # the pilot now flies the localizer, not a heading
-        self._assign_alt(f.faf_alt)
-        verb = "descend and maintain" if self.sim.altitude_ft > f.faf_alt + 300 else "maintain"
+        self._assign_alt(alt)
+        verb = "descend and maintain" if self.sim.altitude_ft > alt + 300 else "maintain"
         appr = self.phr.approach_name(self.appr_kind, self.appr_variant)
         tx = self._tx(self.vector_pos, self.phr.intercept_clearance(
-            appr, self.appr_kind, self.arr_runway, hdg, turn, f.faf_alt, verb), True)
+            appr, self.appr_kind, self.arr_runway, hdg, turn, alt, verb), True)
         tx.proactive = True
-        expected: dict = {"runway": self.arr_runway, "altitude": f.faf_alt}
+        expected: dict = {"runway": self.arr_runway, "altitude": alt}
         if hdg is not None:
             expected["heading"] = hdg
         self._expect(tx, expected, set())

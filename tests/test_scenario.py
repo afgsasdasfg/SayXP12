@@ -7,7 +7,7 @@ from atc.brain.fsm import Brain, FlightConfig
 from atc.brain.monitor import Monitor
 from atc.llm.intent_parser import IntentParser
 from atc.state import Phase, Position, SimState
-from test_approach import KBTV_MAGVAR, UUEE_MAGVAR, fly_vectors
+from test_approach import KBTV_MAGVAR, UUEE_MAGVAR, fly_vectors, readback
 
 
 def sim_at(lat, lon, khz, **kw):
@@ -353,12 +353,11 @@ def test_full_flight_radio_check_to_stand(kbtv):
     # --- Approach: vectors to the ILS (no CIFP here: FAF 2500 = field 333 ft + 2000, rounded to 500)
     s = air(44.6, -73.3, APP, 10000)
     out = say(b, p, "Burlington Approach, DLH4AB, flight level 100, request ILS approach", s)
-    assert "expect vectors ILS approach runway 15" in out[0].text and "descend 3500 ft" in out[0].text
-    assert b.phase == Phase.APPROACH and b.assigned_alt == 3500
-    assert say(b, p, f"heading {b.assigned_hdg}, descend 3500, DLH4AB", s) == []
+    assert "expect vectors ILS approach runway 15" in out[0].text
+    assert b.phase == Phase.APPROACH and b.final.faf_alt == 2500
+    assert readback(b, out[0], s) == []
     s, said, _ = fly_vectors(b, m, s, KBTV_MAGVAR)
-    assert any("maintain 2500 ft until established on the localizer, cleared ILS approach runway 15" in t
-               for t in said), said
+    assert any("until established on the localizer, cleared ILS approach runway 15" in t for t in said), said
     assert said[-1] == "DLH4AB, contact tower 118.3"
 
     # --- landing clearance (Tower)
@@ -469,12 +468,10 @@ def test_full_flight_ulli_to_uuee(ulli, uuee, xp_root):
     s = air(56.3, 37.6, UUEE_APP, 10000, **wx())
     out = say(b, p, "Approach, DLH4AB descending flight level 100", s)
     assert out[0].position == Position.APPROACH
-    assert "expect vectors ILS approach runway 24L" in out[0].text and "descend 3000 ft" in out[0].text
-    assert b.assigned_alt == 3000 and b.final.faf_alt == 2000
-    assert say(b, p, f"heading {b.assigned_hdg}, descend 3000 feet, DLH4AB", s) == []
+    assert "expect vectors ILS approach runway 24L" in out[0].text and b.final.faf_alt == 2000
+    assert readback(b, out[0], s) == []
     s, said, _ = fly_vectors(b, m, s, UUEE_MAGVAR)
-    assert any("maintain 2000 ft until established on the localizer, cleared ILS approach runway 24L" in t
-               for t in said), said
+    assert any("until established on the localizer, cleared ILS approach runway 24L" in t for t in said), said
     assert said[-1] == "DLH4AB, contact tower 118.7"
 
     # --- Tower: landing clearance on the same runway as the approach

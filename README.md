@@ -137,6 +137,6 @@ tests/fixtures/      KBTV taxi network excerpt from the X-Plane 12 apt.dat
 ## Known limitations
 
 - No Center/Approach frequencies in apt.dat: Center uses `atc.center_khz` from the config.
-- Approach vectors to the final (downwind, base, 30° intercept) from the CIFP FAF. STARs only with a SimBrief plan; a CIFP STAR without runway transitions (UUEE: BUKU3E/BUKU3F) is taken as serving every runway, so the letter is the planned one, not checked against the runway. Without CIFP the FAF comes from the field elevation and a 3° glideslope.
+- Approach vectors to the final (downwind, base, 30° intercept) from the CIFP FAF; descents follow a 3° path along the legs left and the localizer is joined just below the glideslope. STARs only with a SimBrief plan; a CIFP STAR without runway transitions (UUEE: BUKU3E/BUKU3F) is taken as serving every runway, so the letter is the planned one, not checked against the runway. Without CIFP the FAF comes from the field elevation and a 3° glideslope.
 - A missing or broken taxi network gives "taxi to runway X at your discretion".
 - Taxi cost has no sharp-turn penalty yet.
