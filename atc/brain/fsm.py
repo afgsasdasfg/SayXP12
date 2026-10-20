@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Callable
@@ -303,6 +304,9 @@ class Brain:
             return [self._tx(pos, self.phr.say_again())]
         if intent.intent == "radio_check":
             return [self._tx(pos, self.phr.radio_check(self.station_name(pos)))]
+        if intent.intent == "unable":  # "negative" / "unable": drop what we were waiting for
+            self.pending = None
+            return [self._tx(pos, self.phr.roger())]
         if intent.intent == "request_qnh":
             return [self._tx(pos, self.phr.custom(*self.phr.qnh(self.sim.qnh_hpa)))]
         if self.pending and pos == self.pending.position and (
@@ -363,23 +367,29 @@ class Brain:
                 return c
         return None
 
+    _GENERIC_FREQ_WORDS = {"CLEARANCE", "CLR", "CLD", "DEL", "DELIVERY", "GND", "GROUND", "TWR", "TOWER",
+                           "APP", "APCH", "APPROACH", "DEP", "DEPARTURE", "RADAR", "CTR", "CENTER", "ATIS",
+                           "CTAF", "UNICOM", "INTL", "INTERNATIONAL", "AIRPORT", "GENERAL", "THE"}
+
     def station_name(self, pos: Position) -> str:
-        """'Burlington Delivery': city from the apt.dat frequency names, else airport name."""
+        """'Pulkovo Delivery', 'Peterburg Approach': the name from the apt.dat frequency of this
+        position ('PULKOVO DEL'), else of any position, else the airport name, else the city."""
         if pos == Position.CENTER:
             return "Center"
         ap = self.field
-        city = ap.meta.get("city", "")
-        if not city:
-            for lst in ap.freqs.values():
-                for f in lst:
-                    words = f.name.split()
-                    if len(words) >= 2:
-                        city = words[0]
-                        break
-                if city:
-                    break
-        city = (city or ap.name.split()[0]).title()
-        return f"{city} {pos.value}"
+
+        def name_of(freqs) -> str | None:
+            for f in freqs:
+                word = re.split(r"[\s/-]", f.name.strip().upper())[0] if f.name.strip() else ""
+                if word.isalpha() and len(word) > 2 and word not in self._GENERIC_FREQ_WORDS:
+                    return word
+            return None
+
+        name = (name_of(ap.freqs.get(pos.name.lower(), []))
+                or name_of(f for lst in ap.freqs.values() for f in lst)
+                or name_of([type("F", (), {"name": ap.name})()])
+                or ap.meta.get("city", "") or ap.name.split()[0])
+        return f"{name.title()} {pos.value}"
 
     # Each _on_<position> returns transmissions, or None when that station would not
     # handle this request now (-> "contact <expected>").
@@ -422,12 +432,12 @@ class Brain:
             self._filed()), True)
         gnd = self.freq_of(Position.GROUND, self.dep)
 
-        def ok():
+        def ok():  # "readback correct" only with confirm_readback; silence otherwise
             self._set_phase(Phase.CLEARANCE)
             if gnd and gnd != self.freq_of(Position.DELIVERY, self.dep):
                 return [self._tx(Position.DELIVERY, self.phr.readback_correct(
-                    "ground", gnd, "for push and start"))]
-            return [self._tx(Position.DELIVERY, self.phr.readback_correct())]
+                    "ground", gnd, "for push and start", confirm=self.fc.confirm_readback))]
+            return []
 
         self._expect(tx, {"runway": self.runway, "altitude": self.assigned_alt,
                           "squawk": self.squawk}, {"squawk"}, ok)

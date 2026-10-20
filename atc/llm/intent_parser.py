@@ -374,8 +374,8 @@ def classify_rules(text: str) -> str:
         return "request_descent"
     if re.search(r"\brequest(?:ing)? (?:higher|climb)\b", t):
         return "request_climb"
-    if re.search(r"\bunable\b", t):
-        return "unable"
+    if re.search(r"\bunable\b", t) or re.fullmatch(r"(?:\w+ )?negative(?: \w+){0,2}", t.strip()):
+        return "unable"  # "negative, Aeroflot 51" without a request
     slots = extract_slots(text)
     if any(k in slots for k in ("squawk", "hold_short", "cleared_takeoff", "cleared_land", "line_up",
                                 "frequency")) or re.search(r"\b(cleared to|climb|descend|taxi via)\b", t):

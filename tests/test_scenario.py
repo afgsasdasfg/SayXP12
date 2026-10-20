@@ -41,7 +41,7 @@ def test_departure_flow(kbtv):
     out = say(b, p, "cleared KBOS runway 15 climb 5000 squawk 1234 DLH4AB", s)
     assert out[0].text.startswith("DLH4AB, negative") and sq in out[0].text
     out = say(b, p, f"cleared KBOS runway 15 climb 5000 squawk {sq} DLH4AB", s)
-    assert "readback correct" in out[0].text and "126.3" in out[0].text
+    assert out[0].text == "DLH4AB, contact ground 126.3 for push and start"  # no "readback correct"
     assert b.phase == Phase.CLEARANCE
 
     # taxi
@@ -568,11 +568,23 @@ def test_ground_understands_runway_vacated(ulli, uuee):
     assert "taxi to stand" in out[0].text
 
 
-@pytest.mark.xfail(reason="station names come from the apt.dat city ('St. Petersburg', 'Moscow'), "
-                          "not from the frequency names ('PULKOVO DEL')")
-def test_station_names_ulli_uuee(ulli, uuee):
+def test_station_names_ulli_uuee(ulli, uuee, kbtv):
+    """Names from the apt.dat frequency names, not the city ('St. Petersburg Delivery')."""
     b = Brain(FlightConfig(callsign="DLH4AB"), ulli)
     assert b.station_name(Position.DELIVERY) == "Pulkovo Delivery"
+    assert b.station_name(Position.APPROACH) == "Peterburg Approach"
+    assert b.station_name(Position.DEPARTURE) == "Pulkovo Departure"
+    # UUEE's frequencies are just 'CLD', 'TWR': the airport name
+    assert Brain(FlightConfig(), uuee).station_name(Position.TOWER) == "Sheremetyevo Tower"
+    assert Brain(FlightConfig(), kbtv).station_name(Position.DELIVERY) == "Burlington Delivery"
+
+
+def test_negative_gets_roger(ulli):
+    b = Brain(FlightConfig(callsign="AFL51"), ulli)
+    b.phase = Phase.CLEARANCE
+    stand = next(g for g in ulli.gates if g.name == "101A")
+    out = say(b, IntentParser(), "Negative, Aeroflot 51.", sim_at(stand.lat, stand.lon, 121700, **wx()))
+    assert out[0].text == "AFL51, roger" and b.pending is None
 
 
 def test_vatsim_first_call_sets_callsign_and_stand(ulli):

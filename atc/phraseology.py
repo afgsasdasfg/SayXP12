@@ -169,12 +169,13 @@ class Phraseology:
         return self._out(t, s)
 
     def readback_correct(self, next_pos: str | None = None, next_khz: int | None = None,
-                         purpose: str = "") -> tuple[str, str]:
-        t, s = "readback correct", "readback correct"
+                         purpose: str = "", confirm: bool = True) -> tuple[str, str]:
+        """'readback correct[, contact ground 121.7 for push and start]'; confirm=False: only the handoff."""
+        parts_t, parts_s = (["readback correct"], ["readback correct"]) if confirm else ([], [])
         if next_pos and next_khz:
-            t += f", contact {next_pos} {freq_text(next_khz)}{(' ' + purpose) if purpose else ''}"
-            s += f", contact {next_pos} {freq(next_khz)}{(' ' + purpose) if purpose else ''}"
-        return self._out(t, s)
+            parts_t.append(f"contact {next_pos} {freq_text(next_khz)}{(' ' + purpose) if purpose else ''}")
+            parts_s.append(f"contact {next_pos} {freq(next_khz)}{(' ' + purpose) if purpose else ''}")
+        return self._out(", ".join(parts_t), ", ".join(parts_s))
 
     def readback_wrong(self, items: list[tuple[str, str, str]]) -> tuple[str, str]:
         """items: (label, text value, spoken value) that were wrong/missing."""
