@@ -8,6 +8,7 @@ import time
 
 from ..phase_tracker import on_runway
 from ..state import Phase, Position, SimState, Transmission
+from ..world.aptdat import distance_m
 from ..world.taxi import distance_to_route
 from .fsm import Brain
 
@@ -22,6 +23,7 @@ HDG_DEV_DEG = 20.0
 ROUTE_JOIN_M = 25.0
 ROUTE_LOST_M = 60.0
 ALT_DEV_FT = 300.0
+APPROACH_HANDOFF_NM = 40.0
 
 
 class Monitor:
@@ -42,6 +44,7 @@ class Monitor:
         b.update(s)
         out: list[Transmission] = []
         for rule in (self._no_readback, self._handoff_departure, self._handoff_center,
+                     self._handoff_approach, self._approach_vectors,
                      self._hold_short_handoff, self._runway_incursion, self._route_deviation,
                      self._taxi_speed, self._heading_deviation,
                      self._altitude_deviation, self._runway_vacated):
@@ -90,6 +93,22 @@ class Monitor:
         tx = b._tx(Position.DEPARTURE, b.phr.contact("center", ctr), True)
         b._expect(tx, {"frequency": ctr}, set())
         return [tx]
+
+    def _handoff_approach(self, s: SimState) -> list[Transmission]:
+        """Inbound within APPROACH_HANDOFF_NM of the destination: Center hands over to Approach."""
+        b = self.b
+        if b.phase != Phase.ARRIVAL or b.approach_handoff or b.pending is not None or not b.tracker.airborne:
+            return []
+        ap = b.field
+        if distance_m(s.lat, s.lon, ap.lat, ap.lon) > APPROACH_HANDOFF_NM * 1852:
+            return []
+        out = b.handoff_approach()
+        for tx in out:
+            tx.proactive = True
+        return out
+
+    def _approach_vectors(self, s: SimState) -> list[Transmission]:
+        return self.b.vector_tick()
 
     def _hold_short_handoff(self, s: SimState) -> list[Transmission]:
         b = self.b

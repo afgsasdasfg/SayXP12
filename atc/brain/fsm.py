@@ -16,8 +16,9 @@ from ..phraseology import Phraseology, freq_text, wind
 from ..state import Phase, PilotIntent, Position, SimState, Transmission
 from ..world import taxi
 from ..world.aptdat import Airport, AptIndex, distance_m
-from ..world.cifp import cifp_file, parse_cifp, sids_for_runway
+from ..world.cifp import cifp_file, final_for_runway, parse_cifp, parse_finals, sids_for_runway
 from ..world.runways import select_runway
+from . import vectors
 
 log = logging.getLogger("brain")
 
@@ -106,6 +107,14 @@ class Brain:
         self.called_type: str | None = None
         self.stand: str | None = None
         self.dest_choices: list[str] = []       # several airports in the requested city
+        # vectors to final (APPROACH phase)
+        self.final: vectors.Final | None = None
+        self.appr_kind, self.appr_variant = "ILS", ""
+        self.vector: vectors.Vector | None = None
+        self.vector_pos = Position.APPROACH
+        self.appr_cleared = False
+        self.established = False
+        self.approach_handoff = False   # Center already sent us to Approach
         self._rng = random.Random(fc.callsign)
 
     # ------------------------------------------------------------------ helpers
@@ -154,7 +163,12 @@ class Brain:
         exp = self.expected_position()
         if same(self.freq_of(exp), khz):
             return exp
-        for pos in Position:
+        order = list(Position)
+        if self.phase == Phase.ENROUTE or self.phase in ARRIVAL_PHASES:
+            # Departure and Approach often share one frequency (KBTV 121.1): inbound, it is Approach
+            order.remove(Position.APPROACH)
+            order.insert(order.index(Position.DEPARTURE), Position.APPROACH)
+        for pos in order:
             for ap in filter(None, (self.field, self.dep, self.dest)):
                 if same(self.freq_of(pos, ap), khz):
                     return pos
@@ -568,29 +582,155 @@ class Brain:
             tx = self._tx(C, self.phr.climb(alt, "descend"), True)
             self._expect(tx, {"altitude": alt}, set())
             return [tx]
-        if it.intent in ("request_approach", "check_in", "report_position") and self.phase in (
-                Phase.ARRIVAL, Phase.APPROACH):
-            return self._approach_clearance(C if it.intent != "check_in" else C)
+        if it.intent == "request_approach" and self.phase == Phase.ENROUTE:
+            self._set_phase(Phase.ARRIVAL)
+        if it.intent in ("request_approach", "check_in", "report_position") and self.phase == Phase.ARRIVAL:
+            return self.handoff_approach() or self._start_vectors(C)
+        if self.phase == Phase.APPROACH and self.vector_pos == C:
+            return self._on_vectors(it)
         return None
 
     def _on_approach(self, it: PilotIntent):
-        if self.phase in (Phase.ARRIVAL, Phase.APPROACH, Phase.ENROUTE) and it.intent in (
+        A = Position.APPROACH
+        if self.phase in (Phase.ARRIVAL, Phase.ENROUTE) and it.intent in (
                 "check_in", "request_approach", "report_position", "request_descent"):
-            if self.phase == Phase.ENROUTE:
-                self._set_phase(Phase.ARRIVAL)
-            return self._approach_clearance(Position.APPROACH)
+            self._set_phase(Phase.ARRIVAL)
+            return self._start_vectors(A)
+        if self.phase == Phase.APPROACH:
+            return self._on_vectors(it)
         return self._on_departure(it) if self.phase in (Phase.TAKEOFF, Phase.DEPARTURE) else None
 
-    def _approach_clearance(self, pos: Position) -> list[Transmission]:
+    # ----------------------------------------------------- vectors to final
+    def handoff_approach(self) -> list[Transmission]:
+        """Center -> Approach, when Approach has a frequency of its own."""
+        app, ctr = self.freq_of(Position.APPROACH), self.freq_of(Position.CENTER)
+        if not app or app == ctr or self.approach_handoff:
+            return []
+        self.approach_handoff = True
+        self._set_phase(Phase.ARRIVAL)
+        tx = self._tx(Position.CENTER, self.phr.contact("approach", app), True)
+        self._expect(tx, {"frequency": app}, set())
+        return [tx]
+
+    def _build_final(self) -> vectors.Final | None:
+        """Final approach course from CIFP (FAF, altitude, course), else from the runway."""
         self._load_dest()
-        ap = self.dest or self.dep
+        ap = self.field
         self.arr_runway = self.arr_runway or self._select_arr_runway()
-        alt = int(round((ap.elevation_ft + 2500) / 500.0) * 500)
-        self._assign_alt(alt)
+        end = ap.runway_end(self.arr_runway)
+        if end is None:
+            return None
+        fa = None
+        f = cifp_file(self.xp_root, ap.icao) if self.xp_root else None
+        if f:
+            fa = final_for_runway(parse_finals(f), self.arr_runway)
+        self.appr_kind, self.appr_variant = (fa.kind, fa.variant) if fa else ("ILS", "")
+        course_mag = fa.course_mag if fa and fa.course_mag is not None else (end.heading_true - self.magvar) % 360
+        faf_alt = fa.faf_alt if fa and fa.faf_alt else int(round((ap.elevation_ft + 2000) / 500.0) * 500)
+        faf_dist = fa.faf_dist_nm if fa and fa.faf_dist_nm else \
+            vectors.faf_distance_from_altitude(faf_alt, ap.elevation_ft)
+        log.info("final %s runway %s: course %03.0f, FAF %s %d ft %.1f NM", self.appr_kind, self.arr_runway,
+                 course_mag, fa.faf if fa else "-", faf_alt, faf_dist)
+        return vectors.Final(end.lat, end.lon, end.heading_true, course_mag, faf_dist, faf_alt)
+
+    def _start_vectors(self, pos: Position) -> list[Transmission]:
+        self.final = self._build_final()
+        if self.final is None:
+            return [self._tx(pos, self.phr.say_again())]
+        self.vector_pos = pos
+        self.appr_cleared = self.established = False
         self._set_phase(Phase.APPROACH)
-        twr = self._apt_freq(ap, "tower", "unicom")
-        tx = self._tx(pos, self.phr.cleared_approach("ILS", self.arr_runway, alt, twr), True)
-        self._expect(tx, {"runway": self.arr_runway, "altitude": alt}, set())
+        f = self.final
+        x, y = f.frame(self.sim.lat, self.sim.lon)
+        v = vectors.first_vector(f, x, y)
+        alt = -(-(f.faf_alt + 1000) // 500) * 500   # FAF + 1000, up to the next 500
+        if self.sim.altitude_ft < alt + 200:
+            alt = None   # already low enough: keep what was assigned
+        self.vector = v
+        turn = self._turn_direction(v.heading)
+        self._assign_heading(v.heading)
+        expected: dict = {"heading": v.heading}
+        if alt:
+            self._assign_alt(alt)
+            expected["altitude"] = alt
+        appr = self.phr.approach_name(self.appr_kind, self.appr_variant)
+        tx = self._tx(pos, self.phr.vectors_for_approach(appr, self.arr_runway, v.heading, turn, alt), True)
+        self._expect(tx, expected, set())
+        return [tx]
+
+    def _on_vectors(self, it: PilotIntent):
+        """Pilot calls while being vectored: restart after a program restart, else repeat."""
+        if self.vector is None and not self.appr_cleared:
+            return self._start_vectors(self.vector_pos)
+        if it.intent in ("report_final", "report_position") and self.appr_cleared:
+            return self._established_handoff() or None
+        if it.intent in ("check_in", "request_approach", "report_position") and self.last_tx:
+            if self.last_tx.position == self.vector_pos:
+                return [self._tx(self.vector_pos, (self.last_tx.text, self.last_tx.spoken),
+                                 self.last_tx.expects_readback)]
+        return None
+
+    def vector_tick(self) -> list[Transmission]:
+        """Monitor: next turn, the approach clearance, then Tower once established."""
+        f, v = self.final, self.vector
+        if self.phase != Phase.APPROACH or f is None or v is None or self.pending is not None:
+            return []
+        if not self.tracker.airborne or self.sim.on_ground:
+            return []
+        x, y = f.frame(self.sim.lat, self.sim.lon)
+        if self.appr_cleared:
+            if not self.established and vectors.established(f, x, y, self.sim.heading_mag):
+                return self._established_handoff()
+            return []
+        nv = vectors.next_vector(f, v, x, y)
+        if nv and nv.leg == "intercept":
+            return self._clear_approach(nv)
+        if nv:
+            self.vector = nv
+            alt = f.faf_alt if nv.leg == "base" and (self.assigned_alt or 0) > f.faf_alt else None
+            turn = self._turn_direction(nv.heading)
+            self._assign_heading(nv.heading)
+            expected: dict = {"heading": nv.heading}
+            if alt:
+                self._assign_alt(alt)
+                expected["altitude"] = alt
+            tx = self._tx(self.vector_pos, self.phr.vector(nv.heading, turn, alt, leg=nv.leg), True)
+            tx.proactive = True
+            self._expect(tx, expected, set())
+            return [tx]
+        if v.leg == "intercept" and (abs(y) <= 2 * vectors.INTERCEPT_TURN_NM or x <= f.gate_nm + 8):
+            return self._clear_approach(None)   # straight in: already on the intercept heading
+        return []
+
+    def _clear_approach(self, nv: vectors.Vector | None) -> list[Transmission]:
+        f = self.final
+        hdg = turn = None
+        if nv is not None:
+            self.vector = nv
+            hdg, turn = nv.heading, self._turn_direction(nv.heading)
+        self.appr_cleared = True
+        self._assign_heading(None)   # the pilot now flies the localizer, not a heading
+        self._assign_alt(f.faf_alt)
+        verb = "descend and maintain" if self.sim.altitude_ft > f.faf_alt + 300 else "maintain"
+        appr = self.phr.approach_name(self.appr_kind, self.appr_variant)
+        tx = self._tx(self.vector_pos, self.phr.intercept_clearance(
+            appr, self.appr_kind, self.arr_runway, hdg, turn, f.faf_alt, verb), True)
+        tx.proactive = True
+        expected: dict = {"runway": self.arr_runway, "altitude": f.faf_alt}
+        if hdg is not None:
+            expected["heading"] = hdg
+        self._expect(tx, expected, set())
+        return [tx]
+
+    def _established_handoff(self) -> list[Transmission]:
+        self.established = True
+        self.assigned_alt = None   # descending on the glideslope is no altitude bust
+        twr = self._apt_freq(self.field, "tower", "unicom")
+        if not twr or twr == self.freq_of(self.vector_pos):
+            return []
+        tx = self._tx(self.vector_pos, self.phr.contact("tower", twr), True)
+        tx.proactive = True
+        self._expect(tx, {"frequency": twr}, set())
         return [tx]
 
     # ------------------------------------------------------------ decisions
@@ -653,7 +793,8 @@ class Brain:
 
     def _mentions_expected(self, it: PilotIntent) -> bool:
         """The call repeats values of the instruction we are waiting a readback for."""
-        if it.intent not in ("check_in", "report_position", "request_climb", "request_descent", "other"):
+        if it.intent not in ("check_in", "report_position", "request_climb", "request_descent", "other",
+                             "report_final", "request_approach"):
             return False
         exp = set(self.pending.expected)
         got = set(it.readback)
@@ -811,6 +952,8 @@ class Brain:
         self.cleared_takeoff = self.cleared_land = False
         self.pending = None
         self.identified, self.stand, self.dest_choices = False, None, []  # next flight: new first call
+        self.final = self.vector = None
+        self.appr_cleared = self.established = self.approach_handoff = False
         self._set_phase(Phase.PARKED)
 
     def hold_point(self) -> tuple[float, float] | None:

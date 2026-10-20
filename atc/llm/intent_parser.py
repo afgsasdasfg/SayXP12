@@ -365,6 +365,8 @@ def classify_rules(text: str) -> str:
     if any(k in slots for k in ("squawk", "hold_short", "cleared_takeoff", "cleared_land", "line_up",
                                 "frequency")) or re.search(r"\b(cleared to|climb|descend|taxi via)\b", t):
         return "readback"
+    if "heading" in slots and not re.search(r"\b(with you|checking in)\b", t):
+        return "readback"  # "right heading 330, DLH4AB" (vectors to final)
     if re.search(r"\b(with you|checking in|good (morning|afternoon|evening|day)|passing|climbing|descending|level)\b", t):
         return "check_in"
     if re.search(r"\b(roger|wilco|copy|will do)\b", t):

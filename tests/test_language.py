@@ -67,6 +67,8 @@ def test_rule_classifier():
     assert classify_rules("Living good day, Lufthansa four Alpha Bravo, ready check.") == "radio_check"
     assert classify_rules("delivery good deal, Lufthansa four Alpha Bravo, ready check.") == "radio_check"
     assert classify_rules("Burlington Delivery, DLH4AB, radio check, how do you read") == "radio_check"
+    assert classify_rules("right heading 330, DLH4AB") == "readback"   # vectors: heading only
+    assert classify_rules("Approach, DLH4AB, with you heading 330") == "check_in"
     assert classify_rules("bla bla") == "other"
 
 

@@ -22,10 +22,10 @@ templates decide *how* it is said. The LLM never invents frequencies, taxiways, 
 | Ground: push/start, taxi with hold short, missed-turn detection | ✅ |
 | Tower: takeoff clearance, runway incursion warning, handoff to Departure | ✅ |
 | Departure / Center: radar contact, climb to cruise, altitude deviation warnings | ✅ basic |
-| Approach / landing / vacate / taxi to stand | ✅ basic (no vectors yet) |
+| Approach: Center → Approach handoff, vectors to the ILS (CIFP final), landing / vacate / taxi to stand | ✅ (vectors not flown live yet) |
 | PTT (keyboard + joystick via X-Plane), faster-whisper STT, Piper TTS with radio effect, voice per position | ✅ |
 | Intent parser: Gemini / Ollama / rule-based fallback | ✅ |
-| STARs, vectoring to ILS, TOD, ATIS, traffic (TCAS), VFR, overlay window | ⏳ stage 2–3 |
+| STARs, TOD, ATIS, traffic (TCAS), VFR, overlay window | ⏳ stage 2–3 |
 
 ## Install (Windows)
 
@@ -129,6 +129,6 @@ tests/fixtures/      KBTV taxi network excerpt from the X-Plane 12 apt.dat
 ## Known limitations
 
 - No Center/Approach frequencies in apt.dat: Center uses `atc.center_khz` from the config.
-- Approach is a direct "cleared ILS" clearance, no vectors or STARs yet.
+- Approach vectors to the final (downwind, base, 30° intercept) from the CIFP FAF; no STARs yet. Without CIFP the FAF comes from the field elevation and a 3° glideslope.
 - A missing or broken taxi network gives "taxi to runway X at your discretion".
 - Taxi cost has no sharp-turn penalty yet.

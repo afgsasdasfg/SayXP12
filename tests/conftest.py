@@ -78,23 +78,20 @@ def city_index(tmp_path):
     return AptIndex(tmp_path / "xp", cache_dir=tmp_path / "cache")
 
 
-# Pulkovo, reduced: the two runways, frequencies and a few stands (real names and positions are
-# not needed for Delivery; enough to issue a clearance on the ULLI -> UUEE test flight)
-ULLI_LINES = [
-    "1 78 0 0 ULLI Pulkovo",
-    "1302 city St. Petersburg",
-    "100 60.00 1 0 0.25 0 0 0 10L 59.8064 30.2433 0 0 3 0 0 0 28R 59.7970 30.3058 0 0 3 0 0 0",
-    "100 60.00 1 0 0.25 0 0 0 10R 59.8023 30.2297 0 0 3 0 0 0 28L 59.7906 30.3046 0 0 3 0 0 0",
-    "1300 59.8005 30.2700 280 gate jets|heavy 12",
-    "1300 59.8008 30.2710 280 gate jets|heavy 14",
-    "1052 132200 PULKOVO DELIVERY",
-    "1053 121700 PULKOVO GROUND",
-    "1054 118100 PULKOVO TOWER",
-    "1056 125200 PULKOVO DEPARTURE",
-    "99",
-]
+def _fixture_airport(name):
+    with open(FIX / f"{name}_apt.dat", "rb") as f:
+        lines = f.readlines()
+    start = next(i for i, l in enumerate(lines) if l.startswith(b"1 "))
+    return parse_airport_lines(lines[start:])
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def ulli():
-    return parse_airport_lines(ULLI_LINES)
+    """Pulkovo: runways, frequencies, taxi network and stands from the X-Plane 12 Global Airports apt.dat."""
+    return _fixture_airport("ULLI")
+
+
+@pytest.fixture(scope="session")
+def uuee():
+    """Sheremetyevo, same excerpt as ulli."""
+    return _fixture_airport("UUEE")
