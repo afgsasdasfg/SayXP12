@@ -154,7 +154,7 @@ def test_ulli_uuee_vectors_to_ils_24l(kbtv, uuee, xp_root):
     s = air(s.lat, s.lon, 126600, 135, 10000, UUEE_MAGVAR)
     tx = say(b, "Moscow Approach, DLH4AB, descending FL100", s)[0]
     assert tx.position == Position.APPROACH, tx
-    assert "expect vectors ILS approach runway 24L" in tx.text and "descend 3000 ft" in tx.text, tx.text
+    assert "expect vectors ILS approach runway 24L" in tx.text, tx.text
     assert b.arr_runway == "24L" and b.final.faf_alt == 2000 and b.final.faf_dist_nm == 4.1
     assert b.vector.leg == "downwind"
     assert readback(b, tx, s) == [] and b.pending is None
@@ -162,9 +162,9 @@ def test_ulli_uuee_vectors_to_ils_24l(kbtv, uuee, xp_root):
     s, said, legs = fly_vectors(b, m, s, UUEE_MAGVAR)
     assert b.established, said
     assert legs[0] == "downwind" and "base" in legs and legs[-1] == "intercept", legs
-    assert any("for base, descend 2000 ft" in t for t in said), said
+    assert any("for base" in t for t in said), said
     clr = next(t for t in said if "cleared ILS approach runway 24L" in t)
-    assert "maintain 2000 ft until established on the localizer" in clr
+    assert "until established on the localizer" in clr
     assert said[-1] == "DLH4AB, contact tower 118.7"
     assert b.assigned_alt is None and b.assigned_hdg is None   # the glideslope descent is not a bust
 
@@ -195,7 +195,8 @@ def test_straight_in_and_no_cifp_fallback(kbtv):
         said += [t.text for t in m.tick(s)]
         if b.appr_cleared:
             break
-    assert any("descend and maintain 2500 ft until established on the localizer, cleared ILS approach runway 15"
+    # joined ~20 NM out: kept up near the glideslope there, not sent down to the FAF's 2500 ft
+    assert any("maintain FL055 until established on the localizer, cleared ILS approach runway 15"
                in t for t in said), said
 
 
@@ -206,3 +207,44 @@ def test_shared_frequency_answers_as_approach_when_inbound(kbtv):
     assert b.position_on(121100) == Position.APPROACH
     b.phase = Phase.DEPARTURE
     assert b.position_on(121100) == Position.DEPARTURE
+
+
+def test_vertical_profile_joins_just_below_the_glideslope(uuee, xp_root):
+    """Live feedback (ULLI -> UUEE, ILS 24L): "brought me in too flat". Vectors sent the aircraft down
+    to the FAF's 2000 ft on base and it flew 8-26 NM level that low before the glideslope.
+    Now the descents follow a 3° path along the legs left, and the localizer is joined a few
+    hundred feet below the glideslope: captured from below within about 2 NM, as in real life."""
+    for brg in (315, 0, 45, 90, 200):   # from the north-west (Pulkovo), north, north-east, east, south
+        b = Brain(FlightConfig(callsign="DLH4AB", destination="UUEE"), uuee,
+                  index=OneAirportIndex(uuee), xp_root=xp_root)
+        m = Monitor(b)
+        b.phase, b.approach_handoff, b.assigned_alt = Phase.ARRIVAL, True, 8000
+        b._load_dest()
+        s = air(*offset(uuee.lat, uuee.lon, brg, 30), 126600, (brg + 180 - UUEE_MAGVAR) % 360, 8000, UUEE_MAGVAR)
+        airborne(m, s)
+        readback(b, say(b, "Moscow Approach, DLH4AB, descending 8000", s)[0], s)
+        f, alt, on_loc, low_level = b.final, s.altitude_ft, None, 0.0
+        for _ in range(800):
+            x, y = f.frame(s.lat, s.lon)
+            if on_loc is not None and alt >= f.glide_alt(x) - 20:
+                break   # glideslope captured
+            hdg = b.assigned_hdg
+            if b.appr_cleared:
+                hdg = f.course_mag if abs(y) < 0.4 else b.vector.heading
+                if on_loc is None and abs(y) < 0.4:
+                    on_loc = (x, alt)
+            if alt <= f.faf_alt + 50:
+                low_level += 0.3
+            target = b.assigned_alt or alt
+            alt = max(target, alt - 300)   # ~1800 ft/min at 180 kt
+            s = fly(s, hdg, 0.3, UUEE_MAGVAR)
+            s.altitude_ft = alt
+            for t in m.tick(s):
+                if t.expects_readback:
+                    assert readback(b, t, s) == [], t.text
+        assert on_loc is not None, brg
+        x_loc, alt_loc = on_loc
+        assert alt_loc <= f.glide_alt(x_loc), (brg, on_loc)            # never from above
+        assert f.glide_alt(x_loc) - alt_loc < 700, (brg, on_loc)       # ... nor far below
+        assert x_loc - x < 2.5, (brg, on_loc, x)                       # level run to the glideslope
+        assert low_level < 3, (brg, low_level)                         # no long run at the FAF altitude
