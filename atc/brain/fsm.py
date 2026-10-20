@@ -243,7 +243,9 @@ class Brain:
     # --------------------------------------------------------------- readbacks
     def _check_readback(self, intent: PilotIntent) -> list[Transmission]:
         p = self.pending
-        rb = intent.readback
+        rb = dict(intent.readback)
+        if "gate" in p.expected and not rb.get("gate") and intent.data.get("stand"):
+            rb["gate"] = intent.data["stand"]  # "taxi via S5 to stand 39": the parser files it as a stand
         wrong: list[tuple[str, str, str]] = []
         for slot, val in p.expected.items():
             got = rb.get(slot)
@@ -278,6 +280,14 @@ class Brain:
                 return False
         if slot in ("cleared_takeoff", "cleared_land", "line_up"):
             return bool(got) == bool(val)
+        if slot == "gate":  # "stand 39" / "gate 039" / "39"
+            def norm(x):
+                return re.sub(r"STAND|GATE|PARKING|[^A-Z0-9]", "", str(x).upper()).lstrip("0")
+            return norm(got) == norm(val)
+        if slot == "taxiways":
+            def names(x):
+                return [str(n).upper().replace(" ", "") for n in (x if isinstance(x, list) else [x])]
+            return names(got) == names(val)
         return str(got).upper().lstrip("0") == str(val).upper().lstrip("0")
 
     def _label(self, slot: str, val) -> tuple[str, str, str]:
@@ -295,6 +305,11 @@ class Brain:
         if slot == "heading":
             from ..phraseology import heading as hdg_s
             return "heading", f"{int(val):03d}", hdg_s(int(val))
+        if slot == "gate":
+            return "stand", str(val), str(val)
+        if slot == "taxiways":
+            from ..phraseology import taxiway
+            return "via", ", ".join(val), ", ".join(taxiway(n) for n in val)
         if slot == "fix":
             from ..phraseology import letters
             return "direct", str(val), letters(str(val))
@@ -326,7 +341,8 @@ class Brain:
                 and self.phase in (Phase.TAXI_OUT, Phase.TAXI_IN)
                 and intent.intent not in ("say_again", "radio_check", "request_qnh")):
             return self._reroute()  # "holding position" / "request taxi": the pilot advises
-        if intent.unclear or intent.intent == "other":
+        if intent.unclear or (intent.intent == "other" and not (
+                self.pending and pos == self.pending.position and self._mentions_expected(intent))):
             return [self._tx(pos, self.phr.say_again())]
         if intent.intent == "say_again":
             if self.last_tx and self.last_tx.position == pos:
@@ -512,7 +528,7 @@ class Brain:
         log.info("taxi route legs: %s", [(lg.taxiways, lg.hold_short, lg.cross) for lg in self.route.legs])
         tx = self._tx(Position.GROUND, self.phr.taxi(self.route, self.runway, s.qnh_hpa, hold), True)
         self._set_phase(Phase.TAXI_OUT)
-        self._expect(tx, {"hold_short": hold}, {"hold_short"})
+        self._expect(tx, self._taxi_expected(None, hold), {"hold_short"})
         return [tx]
 
     def _reroute(self) -> list[Transmission]:
@@ -569,10 +585,20 @@ class Brain:
         self._new_route(taxi.route_to_point(ap, s.lat, s.lon, gate.lat, gate.lon, cls, gate.name))
         self._set_phase(Phase.TAXI_IN)
         hold = self._hold_word(self.route.legs[0].hold_short) if self.route.legs else None
-        tx = self._tx(Position.GROUND, self.phr.taxi_to_gate(self.route, gate.name, hold), bool(hold))
-        if hold:
-            self._expect(tx, {"hold_short": hold}, {"hold_short"})
+        tx = self._tx(Position.GROUND, self.phr.taxi_to_gate(self.route, gate.name, hold), True)
+        self._expect(tx, self._taxi_expected(gate.name, hold), {"hold_short"} if hold else set())
         return [tx]
+
+    def _taxi_expected(self, gate: str | None, hold: str | None) -> dict:
+        """Readback of a taxi clearance: stand, taxiways of the first leg, hold short."""
+        exp: dict = {}
+        if gate:
+            exp["gate"] = gate
+        if self.route and self.route.ok and self.route.legs and self.route.legs[0].taxiways:
+            exp["taxiways"] = list(self.route.legs[0].taxiways)
+        if hold:
+            exp["hold_short"] = hold
+        return exp
 
     def _on_tower(self, it: PilotIntent):
         T = Position.TOWER
@@ -1094,7 +1120,7 @@ class Brain:
                              "report_final", "request_approach"):
             return False
         exp = set(self.pending.expected)
-        got = set(it.readback)
+        got = set(it.readback) | ({"gate"} if it.data.get("stand") else set())
         if "altitude" in exp and "flight_level" in got:
             got.add("altitude")
         return bool(exp & got)
