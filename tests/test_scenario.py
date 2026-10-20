@@ -7,6 +7,7 @@ from atc.brain.fsm import Brain, FlightConfig
 from atc.brain.monitor import Monitor
 from atc.llm.intent_parser import IntentParser
 from atc.state import Phase, Position, SimState
+from test_approach import KBTV_MAGVAR, UUEE_MAGVAR, fly_vectors
 
 
 def sim_at(lat, lon, khz, **kw):
@@ -351,12 +352,16 @@ def test_full_flight_radio_check_to_stand(kbtv):
     assert "descend FL100" in out[0].text and b.phase == Phase.ARRIVAL and b.dest is kbtv
     assert say(b, p, "descend flight level 100, DLH4AB", air(44.2, -72.8, CTR, 35000)) == []
 
-    # --- approach clearance: straight to ILS (vectors to final are an xfail below)
-    out = say(b, p, "Burlington Approach, DLH4AB, flight level 100, request ILS approach",
-              air(44.6, -73.3, APP, 10000))
-    assert "cleared ILS approach runway 15" in out[0].text and "contact tower 118.3 when established" in out[0].text
-    assert b.phase == Phase.APPROACH and b.assigned_alt == 3000  # field 333 ft + 2500, rounded to 500
-    assert say(b, p, "descend 3000, cleared ILS approach runway 15, DLH4AB", air(44.6, -73.3, APP, 10000)) == []
+    # --- Approach: vectors to the ILS (no CIFP here: FAF 2500 = field 333 ft + 2000, rounded to 500)
+    s = air(44.6, -73.3, APP, 10000)
+    out = say(b, p, "Burlington Approach, DLH4AB, flight level 100, request ILS approach", s)
+    assert "expect vectors ILS approach runway 15" in out[0].text and "descend 3500 ft" in out[0].text
+    assert b.phase == Phase.APPROACH and b.assigned_alt == 3500
+    assert say(b, p, f"heading {b.assigned_hdg}, descend 3500, DLH4AB", s) == []
+    s, said, _ = fly_vectors(b, m, s, KBTV_MAGVAR)
+    assert any("maintain 2500 ft until established on the localizer, cleared ILS approach runway 15" in t
+               for t in said), said
+    assert said[-1] == "DLH4AB, contact tower 118.3"
 
     # --- landing clearance (Tower)
     out = say(b, p, "Burlington Tower, DLH4AB established ILS runway 15", air(44.50, -73.20, TWR, 2000))
@@ -410,8 +415,8 @@ def wx(**kw):
     return dict(wind_dir_true=280, wind_speed_kt=12, **kw)
 
 
-def test_full_flight_ulli_to_uuee(ulli, uuee):
-    b = Brain(FlightConfig(callsign="DLH4AB"), ulli, index=RouteIndex(uuee))
+def test_full_flight_ulli_to_uuee(ulli, uuee, xp_root):
+    b = Brain(FlightConfig(callsign="DLH4AB"), ulli, index=RouteIndex(uuee), xp_root=xp_root)
     m = Monitor(b)
     p = IntentParser()
     stand = next(g for g in ulli.gates if g.name == "101A")
@@ -462,12 +467,17 @@ def test_full_flight_ulli_to_uuee(ulli, uuee):
     assert "descend FL100" in out[0].text and b.phase == Phase.ARRIVAL and b.dest is uuee
     assert say(b, p, "descend flight level 100, DLH4AB", air(57.7, 36.0, CTR, 35000, **wx())) == []
 
-    # --- Sheremetyevo Approach (own frequency, unlike KBTV): ILS 24L, 3000 ft
-    out = say(b, p, "Approach, DLH4AB descending flight level 100", air(56.3, 37.6, UUEE_APP, 10000, **wx()))
+    # --- Sheremetyevo Approach (own frequency, unlike KBTV): vectors to ILS 24L, FAF EE122 2000 ft (CIFP)
+    s = air(56.3, 37.6, UUEE_APP, 10000, **wx())
+    out = say(b, p, "Approach, DLH4AB descending flight level 100", s)
     assert out[0].position == Position.APPROACH
-    assert "descend 3000 ft, cleared ILS approach runway 24L, contact tower 118.7 when established" in out[0].text
-    assert b.assigned_alt == 3000  # field 628 ft + 2500, rounded to 500
-    assert say(b, p, "descend 3000 feet cleared ILS runway 24 left DLH4AB", air(56.3, 37.6, UUEE_APP, 10000, **wx())) == []
+    assert "expect vectors ILS approach runway 24L" in out[0].text and "descend 3000 ft" in out[0].text
+    assert b.assigned_alt == 3000 and b.final.faf_alt == 2000
+    assert say(b, p, f"heading {b.assigned_hdg}, descend 3000 feet, DLH4AB", s) == []
+    s, said, _ = fly_vectors(b, m, s, UUEE_MAGVAR)
+    assert any("maintain 2000 ft until established on the localizer, cleared ILS approach runway 24L" in t
+               for t in said), said
+    assert said[-1] == "DLH4AB, contact tower 118.7"
 
     # --- Tower: landing clearance on the same runway as the approach
     out = say(b, p, "Tower, DLH4AB established ILS runway 24 left", air(56.02, 37.55, UUEE_TWR, 2500, **wx()))
@@ -506,6 +516,7 @@ def test_no_readback_reminder_while_pilot_talks(kbtv):
 
 # ------------------------------------------------- not implemented yet (xfail)
 # Not strict: other threads are building some of these; an XPASS means the marker can go.
+# Handoff to Approach, the shared 121.1 and vectors to the ILS are implemented: no marker on those.
 
 def _arrival_brain(ulli, uuee, alt=10000):
     """ULLI -> UUEE flight already handed to Center and cleared down to `alt`."""
@@ -515,7 +526,6 @@ def _arrival_brain(ulli, uuee, alt=10000):
     return b, Monitor(b)
 
 
-@pytest.mark.xfail(reason="Center never hands off to Approach")
 def test_center_hands_off_to_approach(ulli, uuee):
     b, m = _arrival_brain(ulli, uuee)
     # ~30 NM north-west of UUEE, level 10000, descending into the terminal area
@@ -523,7 +533,6 @@ def test_center_hands_off_to_approach(ulli, uuee):
     assert any("contact approach 126.6" in t.text for t in out)
 
 
-@pytest.mark.xfail(reason="on KBTV's shared approach/departure 121.1 the Approach call is answered by Center")
 def test_shared_approach_frequency_answers_as_approach(kbtv):
     b = Brain(FlightConfig(callsign="DLH4AB", destination="KBTV"), kbtv, index=KbtvIndex(kbtv))
     b.phase, b.runway, b.assigned_alt = Phase.ARRIVAL, "15", 10000
@@ -542,7 +551,6 @@ def test_center_starts_descent_at_tod(ulli, uuee):
     assert any("descend" in t.text for t in out) and b.assigned_alt < 35000
 
 
-@pytest.mark.xfail(reason="Approach clears ILS straight away, no vectors to final yet")
 def test_approach_vectors_to_ils(ulli, uuee):
     b, m = _arrival_brain(ulli, uuee)
     out = say(b, IntentParser(), "Approach, DLH4AB, FL100, request ILS approach",
