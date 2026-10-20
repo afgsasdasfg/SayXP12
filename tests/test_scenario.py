@@ -708,3 +708,90 @@ def test_qnh_request_gets_only_qnh(ulli):
     out = say(b, IntentParser(), "Ground, good day, request QNH, Aeroflot 51.",
               sim_at(stand.lat, stand.lon, 121700, **wx(qnh_hpa=1036)))
     assert out[0].text == "AFL51, QNH 1036" and b.phase == Phase.CLEARANCE and b.route is None
+
+
+def _climbing_out(ulli):
+    """ULLI departure under radar vectors, cleared FL100, on Departure's frequency."""
+    b = Brain(FlightConfig(callsign="DLH4AB"), ulli)
+    m = Monitor(b)
+    p = IntentParser()
+    b.runway, b.phase = "28L", Phase.TAKEOFF
+    ticks(m, air(59.80, 30.20, ULLI_TWR, 1800, vs_fpm=2000, **wx()))
+    b.pending = None
+    s = air(59.79, 30.18, ULLI_DEP, 2300, heading_true=280, heading_mag=269, **wx())
+    out = say(b, p, "Departure, DLH4AB passing 2300 climbing 5000", s)
+    assert "climb FL100" in out[0].text
+    assert say(b, p, f"heading {b.assigned_hdg}, climb flight level 100, DLH4AB", s) == []
+    return b, m, p
+
+
+def test_center_handoff_before_levelling_at_fl100(ulli):
+    """Live ULLI-UUEE: cleared FL100, levelled at 9990, the handoff at >= 10000 never came."""
+    b, m, p = _climbing_out(ulli)
+    out = ticks(m, air(59.7, 30.3, ULLI_DEP, 8000, vs_fpm=2000, **wx()))
+    assert out == [] and b.phase == Phase.DEPARTURE
+    out = ticks(m, air(59.7, 30.3, ULLI_DEP, 8700, vs_fpm=2000, **wx()), 1)
+    assert any("contact center 127.9" in t.text for t in out) and b.phase == Phase.ENROUTE
+    assert say(b, p, "127.9, DLH4AB", air(59.7, 30.3, ULLI_DEP, 8800, **wx())) == []
+    out = say(b, p, "Center, DLH4AB passing 9000 climbing flight level 100", air(59.6, 30.5, CTR, 9000, **wx()))
+    assert "climb FL350" in out[0].text and b.assigned_alt == 35000
+
+
+def test_departure_request_higher_gives_more_than_fl100(ulli):
+    b, m, p = _climbing_out(ulli)
+    b.fc.handoff_center_ft = 12000   # Center further up, the pilot asks Departure
+    out = say(b, p, "Departure, DLH4AB request higher", air(59.7, 30.3, ULLI_DEP, 9000, **wx()))
+    assert "FL100" not in out[0].text and b.assigned_alt == 12000
+
+
+def test_center_climbs_a_silent_pilot_levelled_below_cruise(ulli):
+    """Switched to Center without a word, sitting at FL100: Center calls with the climb."""
+    b, m, p = _climbing_out(ulli)
+    out = ticks(m, air(59.7, 30.3, ULLI_DEP, 8700, vs_fpm=2000, **wx()), 1)
+    assert any("contact center" in t.text for t in out)
+    b.pending = None   # handoff read back, then silence on the new frequency
+    assert ticks(m, air(59.6, 30.5, CTR, 9600, vs_fpm=500, **wx())) == []  # still expected to check in
+    out = ticks(m, air(59.6, 30.5, CTR, 10000, **wx()))
+    assert len(out) == 1 and "identified, climb FL350" in out[0].text and out[0].proactive
+    assert say(b, p, "climb flight level 350, DLH4AB", air(59.6, 30.5, CTR, 10000, **wx())) == []
+    assert ticks(m, air(59.6, 30.5, CTR, 34000, **wx())) == []
+
+
+def test_departure_gives_further_climb_before_level_off(ulli):
+    """Cleared 5000 on the first call to Departure, the next level comes before 5000."""
+    b, m, p = _climbing_out(ulli)
+    b._assign_alt(5000)
+    b.pending = None
+    out = ticks(m, air(59.7, 30.3, ULLI_DEP, 3700, vs_fpm=2000, **wx()))
+    assert len(out) == 1 and out[0].position == Position.DEPARTURE and "climb FL100" in out[0].text
+
+
+def test_center_request_direct(ulli, tmp_path):
+    """Live: "Center, Aeroflot 51, request direct Victor uniform, Zulu Papa uniform" got "say again"."""
+    data = tmp_path / "Resources" / "default data"
+    data.mkdir(parents=True)
+    (data / "earth_fix.dat").write_text("I\n1200 Version\n\n 57.512345  33.123456 VUZPU ENRT UU 2097236 VUZPU\n99\n")
+    (data / "earth_nav.dat").write_text("I\n1200 Version\n\n3  55.97  37.41  630 11420 130 0.0 SMR ENRT UU SHEREMETYEVO VOR/DME\n99\n")
+    b, m, p = _climbing_out(ulli)
+    b.xp_root = tmp_path
+    ticks(m, air(59.7, 30.3, ULLI_DEP, 8700, vs_fpm=2000, **wx()), 1)
+    b.pending = None
+    s = air(59.6, 30.5, CTR, 9000, **wx())
+    say(b, p, "Center, DLH4AB passing 9000 climbing flight level 100", s)
+    say(b, p, "climb flight level 350, direct UUEE, DLH4AB", s)
+    out = say(b, p, "Center, DLH4AB, request direct Victor uniform, Zulu Papa uniform.", s)
+    assert "proceed direct VUZPU" in out[0].text and b.pending.expected == {"fix": "VUZPU"}
+    assert say(b, p, "direct victor uniform zulu papa uniform, DLH4AB", s) == []
+    out = say(b, p, "Center, DLH4AB request direct SMR", s)
+    assert "proceed direct SMR" in out[0].text
+    say(b, p, "proceed direct SMR, DLH4AB", s)
+    out = say(b, p, "Center, DLH4AB request direct Kilo Lima Mike November Oscar", s)
+    assert "unable direct KLMNO, point unknown" in out[0].text
+
+
+def test_departure_request_direct_ends_vectors(ulli):
+    b, m, p = _climbing_out(ulli)
+    assert b.assigned_hdg is not None
+    out = say(b, p, "Departure, DLH4AB request direct to ABUBA", air(59.7, 30.3, ULLI_DEP, 6000, **wx()))
+    assert out[0].position == Position.DEPARTURE and "proceed direct ABUBA" in out[0].text
+    assert b.assigned_hdg is None

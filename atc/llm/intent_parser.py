@@ -26,6 +26,7 @@ INTENTS = [
     "ready_for_departure",
     "check_in",             # initial call on a new frequency ("with you, passing 3000")
     "request_climb",
+    "request_direct",       # "request direct VUZPU"
     "request_descent",
     "request_approach",
     "report_final",         # "established ILS 27", "on final", request landing
@@ -40,7 +41,7 @@ INTENTS = [
 
 SLOTS = ("runway", "hold_short", "squawk", "altitude", "flight_level", "frequency",
          "destination", "sid", "heading", "taxiways", "cleared_takeoff", "cleared_land",
-         "line_up", "gate", "information")
+         "line_up", "gate", "information", "fix")
 
 SYSTEM_PROMPT = """You parse pilot radio transmissions for an ATC simulator.
 Return ONLY a JSON object:
@@ -51,7 +52,8 @@ Return ONLY a JSON object:
  "unclear": true if the transmission is garbled or you cannot tell what the pilot wants}
 Slots: runway ("27L"), hold_short ("27L"), squawk ("4521"), altitude (feet, integer),
 flight_level (integer, 350), frequency ("121.905"), destination (ICAO), sid, heading (integer),
-taxiways (list of names ["B","A3"]), cleared_takeoff (true), cleared_land (true), line_up (true), gate, information (ATIS letter).
+taxiways (list of names ["B","A3"]), cleared_takeoff (true), cleared_land (true), line_up (true), gate, information (ATIS letter),
+fix (waypoint/navaid name, NATO spelling joined: "victor uniform zulu papa uniform" = "VUZPU").
 Speech-to-text output may spell numbers as words ("one two one decimal niner") or use the NATO
 alphabet ("bravo" = "B"); convert them. Never invent values that were not said.
 A transmission that repeats an ATC instruction is "readback" even if it also contains a request.""" % (
@@ -287,6 +289,29 @@ def spoken_codes(text: str) -> list[str]:
     return out
 
 
+_FIX_STOP = {"and", "then", "please", "when", "if", "for", "flight", "level", "climb", "descend",
+             "maintain", "request", "requesting", "heading"}
+
+
+def _fix(t: str) -> str | None:
+    """Point after 'direct (to)': NATO-spelled letters joined, or one 2-5 letter name."""
+    m = re.search(r"\bdirect (?:to )?(.+)", t)
+    if not m:
+        return None
+    words = m.group(1).split()
+    spelled = []
+    for w in words:
+        if (letter := nato_letter(w)) and w not in _FIX_STOP:
+            spelled.append(letter)
+        else:
+            break
+    if len(spelled) >= 2:
+        return "".join(spelled)
+    if words and re.fullmatch(r"[a-z]{2,5}", words[0]) and words[0] not in _FIX_STOP:
+        return words[0].upper()
+    return None
+
+
 def extract_slots(text: str) -> dict:
     """Regex slot extraction from a normalised transmission."""
     t = normalize(text)
@@ -324,6 +349,8 @@ def extract_slots(text: str) -> dict:
         dest = name
     if dest:
         s["destination"] = dest
+    if fix := _fix(t):
+        s["fix"] = fix
     if m := re.search(r"(?:information|info) ([a-z]+)\b", t):
         s["information"] = NATO_WORDS.get(m.group(1), m.group(1)[:1].upper())
     # taxiways after "via": NATO words / letter+digits until a keyword
@@ -370,6 +397,8 @@ def classify_rules(text: str) -> str:
         return "report_final"
     if re.search(r"\brequest(?:ing)? (?:the )?(?:ils|rnav|visual|approach)\b", t):
         return "request_approach"
+    if re.search(r"\brequest(?:ing)? direct\b", t):
+        return "request_direct"
     if re.search(r"\brequest(?:ing)? (?:lower|descent)\b", t):
         return "request_descent"
     if re.search(r"\brequest(?:ing)? (?:higher|climb)\b", t):
@@ -380,7 +409,7 @@ def classify_rules(text: str) -> str:
     if any(k in slots for k in ("squawk", "hold_short", "cleared_takeoff", "cleared_land", "line_up",
                                 "frequency")) or re.search(r"\b(cleared to|climb|descend|taxi via)\b", t):
         return "readback"
-    if "heading" in slots and not re.search(r"\b(with you|checking in)\b", t):
+    if ("heading" in slots or "fix" in slots) and not re.search(r"\b(with you|checking in)\b", t):
         return "readback"  # "right heading 330, DLH4AB" (vectors to final)
     if re.search(r"\b(with you|checking in|good (morning|afternoon|evening|day)|passing|climbing|descending|level)\b", t):
         return "check_in"
@@ -408,6 +437,8 @@ def _norm_value(slot: str, v):
         return m.group(0) if m else None
     if slot == "taxiways":
         return [str(x).upper() for x in v] if isinstance(v, list) else [str(v).upper()]
+    if slot == "fix":
+        return re.sub(r"[^A-Z0-9]", "", str(v).upper()) or None
     if slot in ("destination", "gate", "sid", "information"):
         return str(v).upper()
     return v
@@ -424,7 +455,7 @@ class IntentParser:
     def parse_rules(self, text: str) -> PilotIntent:
         intent = classify_rules(text)
         slots = extract_slots(text)
-        data = {k: slots[k] for k in ("destination", "gate") if k in slots}
+        data = {k: slots[k] for k in ("destination", "gate", "fix") if k in slots}
         if intent in ("request_climb", "request_descent"):
             data.update({k: slots[k] for k in ("altitude", "flight_level") if k in slots})
         ident = extract_identity(text)
