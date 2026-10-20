@@ -260,7 +260,9 @@ class App:
             from .state import Position
             f = b.freq_of(Position[pos])
             print(f"  {pos.title():10s} {f / 1000:.3f}" if f else f"  {pos.title():10s} -")
-        print(f"Callsign {b.fc.callsign} ({b.phr.cs_spoken}); "
+        cs = (f"{b.fc.callsign} ({b.phr.cs_spoken})" if b.identified
+              else f"from your first call (fallback {b.fc.callsign})")
+        print(f"Callsign {cs}; "
               f"aircraft {s.acf_icao}; COM1 {s.com1_khz / 1000:.3f}")
         if self.tts:
             await self.loop.run_in_executor(None, self.tts.preload)

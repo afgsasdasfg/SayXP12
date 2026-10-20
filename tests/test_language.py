@@ -142,3 +142,10 @@ def test_destination_city():
     assert extract_slots("request ifr to kbos")["destination"] == "KBOS"
     assert spoken_codes("kilo juliett foxtrot kilo") == ["KJFK"]
     assert spoken_codes("destination KLGA, Lufthansa 4AB") == ["KLGA"]
+
+
+def test_misheard_airline_names():
+    """Live test ULLI: Whisper wrote 'Aeroflot 51' as 'Airflot 51'."""
+    assert extract_identity("Terrific, good day, Airflot 51, radio check.") == {"callsign": "AFL51"}
+    assert extract_identity("Luftansa four alpha bravo")["callsign"] == "DLH4AB"
+    assert extract_identity("contact ground 121.7, hold short runway 28L") == {}
