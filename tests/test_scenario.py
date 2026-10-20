@@ -490,9 +490,8 @@ def test_full_flight_ulli_to_uuee(ulli, uuee, xp_root):
     # --- taxi to a stand at Sheremetyevo, shutdown -> next flight departs from UUEE
     out = say(b, p, "Ground, DLH4AB vacated runway 24 left, request taxi to stand", sim_at(*UUEE_VACATE, UUEE_GND, **wx()))
     assert "taxi to stand" in out[0].text and b.route.ok
-    if b.pending:
-        assert say(b, p, f"hold short runway {b.pending.expected['hold_short']} DLH4AB",
-                   sim_at(*UUEE_VACATE, UUEE_GND, **wx())) == []
+    assert say(b, p, out[0].text.split(", ", 1)[1] + ", DLH4AB", sim_at(*UUEE_VACATE, UUEE_GND, **wx())) == []
+    assert b.pending is None
     gate = next(g for g in uuee.gates if g.name == b.gate)
     ticks(m, sim_at(gate.lat, gate.lon, UUEE_GND, parking_brake=1.0, engines_running=[0, 0], **wx()), 1)
     assert b.phase == Phase.PARKED and b.dep is uuee
@@ -845,3 +844,32 @@ def test_shutting_down_on_stand_ends_the_flight(ulli, uuee):
     # after the sim already saw the shutdown: same answer, no "say again"
     out = say(b, p, "Aeroflot 51 parked", sim_at(gate.lat, gate.lon, UUEE_GND, **wx()))
     assert out[0].text.endswith("roger, good day")
+
+
+def test_wrong_taxi_readback_is_corrected(ulli, uuee):
+    """Live UUEE: Ground 'taxi to stand 39 via S5', pilot 'taxi via CR5 to stand 49' -> silence."""
+    b, m = _arrival_brain(ulli, uuee)
+    b.phase = Phase.TAXI_IN
+    p = IntentParser()
+    from atc.world.taxi import route_to_point
+    gate = next(g for g in uuee.gates if g.kind == "gate")
+    b.fc.arrival_gate = gate.name
+    # a spot on the field whose route to the stand starts with named taxiways (no crossing first)
+    start = next(n for n in list(uuee.nodes.values())[::7]
+                 if (r := route_to_point(uuee, n.lat, n.lon, gate.lat, gate.lon)).ok
+                 and r.legs and r.legs[0].taxiways and r.length_m > 500)
+    s = sim_at(start.lat, start.lon, UUEE_GND, **wx())
+    out = say(b, p, "Ground, DLH4AB request taxi to stand", s)
+    assert out[0].text.startswith(f"DLH4AB, taxi to stand {gate.name} via"), out
+    exp = b.pending.expected
+    stand, twys, hold = b.gate, exp["taxiways"], exp.get("hold_short")
+    assert exp["gate"] == stand and "CR5" not in twys
+    hs = f" hold short runway {hold}" if hold else ""
+    wrong_stand = "1" if stand != "1" else "2"
+    out = say(b, p, f"taxi via CR5 to stand {wrong_stand}{hs}, DLH4AB", s)
+    want = ", ".join([f"stand {stand}"] + ([f"via {', '.join(twys)}"] if twys else []))
+    assert out and out[0].text.startswith(f"DLH4AB, negative, {want}") and out[0].text.endswith("read back"), out
+    # the corrected readback is accepted
+    via = f" via {' '.join(twys)}" if twys else ""
+    assert say(b, p, f"stand {stand}{via}{hs}, DLH4AB", s) == []
+    assert b.pending is None

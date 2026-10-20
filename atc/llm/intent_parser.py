@@ -356,15 +356,19 @@ def extract_slots(text: str) -> dict:
     if m := re.search(r"(?:information|info) ([a-z]+)\b", t):
         s["information"] = NATO_WORDS.get(m.group(1), m.group(1)[:1].upper())
     # taxiways after "via": NATO words / letter+digits until a keyword
-    if m := re.search(r"\bvia (.+?)(?:hold|cross|runway|$)", t):
-        twys = []
+    if m := re.search(r"\bvia (.+?)(?:\bhold|\bcross|\brunway|\bto\b|\bstand\b|\bgate\b|$)", t):
+        twys, joined = [], False
         for w in m.group(1).split():
             if w in NATO_WORDS:
                 twys.append(NATO_WORDS[w])
-            elif re.fullmatch(r"\d{1,2}", w) and twys:
-                twys[-1] += w
-            elif re.fullmatch(r"[a-z]\d{0,2}", w) and w not in ("a",):
+            elif re.fullmatch(r"\d{1,2}", w) and twys and joined:
+                twys[-1] += w  # "alpha 3" -> A3, not "CR5, aeroflot 51" -> CR551
+            elif re.fullmatch(r"[a-z]\d{0,2}|[a-z]{2}\d{1,2}", w) and w not in ("a",):
                 twys.append(w.upper())
+            else:
+                joined = False
+                continue
+            joined = True
         if twys:
             s["taxiways"] = twys
     return s
@@ -396,8 +400,10 @@ def classify_rules(text: str) -> str:
         return "report_parked"
     if re.search(r"\brequest(?:ing)? (?:a )?new (?:taxi )?(?:route|routing|instructions)\b|\breturn to (?:the )?route\b", t):
         return "request_taxi"  # after "missed your turn, hold position and advise"
-    if re.search(r"\b(request(?:ing)? taxi|ready (?:to|for) taxi|taxi to (?:the )?(?:gate|stand|parking)|request taxi)\b", t):
+    if re.search(r"\b(request(?:ing)? taxi|ready (?:to|for) taxi|request taxi)\b", t):
         return "request_taxi"
+    if re.search(r"\btaxi to (?:the )?(?:gate|stand|parking)\b(?!,? \w*\d)", t) and "via" not in t:
+        return "request_taxi"  # "taxi to the gate please"; "taxi to stand 39 via S5" is a readback
     if re.search(r"\bready (?:for )?(?:departure|take ?off)\b|\bholding short.*ready\b|\bready at\b", t):
         return "ready_for_departure"
     if re.search(r"\b(established|on final|final runway|request(?:ing)? landing|inbound for landing)\b", t):
@@ -416,7 +422,7 @@ def classify_rules(text: str) -> str:
         return "unable"  # "negative, Aeroflot 51" without a request
     slots = extract_slots(text)
     if any(k in slots for k in ("squawk", "hold_short", "cleared_takeoff", "cleared_land", "line_up",
-                                "frequency")) or re.search(r"\b(cleared to|climb|descend|taxi via|arrival)\b", t):
+                                "frequency", "taxiways")) or re.search(r"\b(cleared to|climb|descend|taxi via|arrival)\b", t):
         return "readback"
     if ("heading" in slots or "fix" in slots) and not re.search(r"\b(with you|checking in)\b", t):
         return "readback"  # "right heading 330, DLH4AB" (vectors to final)
