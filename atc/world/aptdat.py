@@ -254,7 +254,7 @@ def scenery_apt_files(xp_root: Path) -> list[Path]:
 
 
 def _index_file(path: Path) -> dict[str, list]:
-    """ICAO -> [offset, lat, lon] for one apt.dat."""
+    """ICAO -> [offset, lat, lon, city, land airport, towered] for one apt.dat."""
     out: dict[str, list] = {}
     cur: str | None = None
     off = 0
@@ -265,7 +265,7 @@ def _index_file(path: Path) -> dict[str, list]:
                 if len(parts) >= 5:
                     cur = parts[4].decode("ascii", "replace")
                     if cur not in out:
-                        out[cur] = [off, None, None]
+                        out[cur] = [off, None, None, "", parts[0] == b"1", False]
                     else:
                         cur = None  # duplicate in same file: keep first
             elif cur is not None:
@@ -274,6 +274,10 @@ def _index_file(path: Path) -> dict[str, list]:
                     rec[1] = float(line.split()[2])
                 elif line.startswith(b"1302 datum_lon "):
                     rec[2] = float(line.split()[2])
+                elif line.startswith(b"1302 city "):
+                    rec[3] = line[len(b"1302 city "):].decode("utf-8", "replace").strip()
+                elif line.startswith((b"1054 ", b"54 ")):
+                    rec[5] = True
                 elif rec[1] is None and line.startswith((b"100 ", b"101 ", b"102 ")):
                     p = line.split()
                     i = {b"100": 9, b"101": 4, b"102": 2}[p[0]]
@@ -288,29 +292,50 @@ class AptIndex:
         self.cache_file = Path(cache_dir) / "apt_index.json"
         self.files = scenery_apt_files(self.xp_root)
         self.entries: dict[str, tuple[str, int, float | None, float | None]] = {}
+        self.cities: dict[str, list[tuple[str, bool]]] = {}  # "boston" -> [(icao, towered)], land only
         self._load()
 
     def _signature(self) -> list:
         return [[str(f), f.stat().st_size, int(f.stat().st_mtime)] for f in self.files]
+
+    CACHE_VERSION = 2  # 2: city and tower per airport
 
     def _load(self) -> None:
         sig = self._signature()
         if self.cache_file.exists():
             try:
                 data = json.loads(self.cache_file.read_text())
-                if data.get("signature") == sig:
+                if data.get("signature") == sig and data.get("version") == self.CACHE_VERSION:
                     self.entries = {k: tuple(v) for k, v in data["entries"].items()}
+                    self._build_cities(data["info"])
                     return
             except (ValueError, KeyError):
                 pass
         log.info("building apt.dat index over %d files (one-time, may take a minute)...", len(self.files))
         entries: dict[str, tuple] = {}
+        info: dict[str, list] = {}
         for f in self.files:  # priority order: first file wins
-            for icao, (off, lat, lon) in _index_file(f).items():
-                entries.setdefault(icao, (str(f), off, lat, lon))
+            for icao, (off, lat, lon, city, land, towered) in _index_file(f).items():
+                if icao not in entries:
+                    entries[icao] = (str(f), off, lat, lon)
+                    info[icao] = [city, land, towered]
         self.entries = entries
+        self._build_cities(info)
         self.cache_file.parent.mkdir(parents=True, exist_ok=True)
-        self.cache_file.write_text(json.dumps({"signature": sig, "entries": entries}))
+        self.cache_file.write_text(json.dumps({"version": self.CACHE_VERSION, "signature": sig,
+                                               "entries": entries, "info": info}))
+
+    def _build_cities(self, info: dict[str, list]) -> None:
+        self.cities = {}
+        for icao, (city, land, towered) in info.items():
+            if city and land:  # seaplane bases and heliports are not IFR destinations
+                self.cities.setdefault(city.lower(), []).append((icao, towered))
+
+    def in_city(self, name: str) -> list[str]:
+        """Airports of a city: 'Boston' -> ['KBOS']. Several -> only the towered ones, if any."""
+        found = self.cities.get(name.lower().strip(), [])
+        towered = [icao for icao, t in found if t]
+        return sorted(towered if len(found) > 1 and towered else [icao for icao, _ in found])
 
     def load(self, icao: str) -> Airport:
         icao = icao.upper()

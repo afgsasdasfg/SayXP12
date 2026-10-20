@@ -101,6 +101,11 @@ class Brain:
         self.last_pilot_t = 0.0
         self.sim = SimState()
         self.gate: str | None = None
+        # VATSIM first call "good day, A320 Lufthansa 4AB on stand 1": who is calling
+        self.identified = False                 # callsign taken from the pilot's first call
+        self.called_type: str | None = None
+        self.stand: str | None = None
+        self.dest_choices: list[str] = []       # several airports in the requested city
         self._rng = random.Random(fc.callsign)
 
     # ------------------------------------------------------------------ helpers
@@ -109,6 +114,10 @@ class Brain:
         if self.phase in ARRIVAL_PHASES and self.dest is not None:
             return self.dest
         return self.dep
+
+    @property
+    def acf_type(self) -> str:
+        return self.sim.acf_icao or self.called_type or "A320"
 
     @staticmethod
     def _vhf(khz: int | None) -> bool:
@@ -189,7 +198,7 @@ class Brain:
         return (f"{stations}, good day, {self.phr.cs_spoken}, radio check. {ap.icao} {ap.name}. Runway "
                 + ", ".join(e.name for r in ap.runways for e in r.ends)
                 + f". Taxi via {twys_spoken}, hold short. Squawk, QNH, flight level, cleared, readback, "
-                  "decimal, request IFR clearance.")
+                  "decimal, on stand, request IFR clearance.")
 
     # --------------------------------------------------------------- readbacks
     def _check_readback(self, intent: PilotIntent) -> list[Transmission]:
@@ -261,6 +270,10 @@ class Brain:
                  pos.value if pos else "nobody", intent.raw_text, intent.intent, intent.readback)
         if pos is None:
             return []
+        self._identify(intent)
+        if pos == Position.DELIVERY and self.dest_choices and (code := self._chosen_destination(intent)):
+            intent = PilotIntent("request_clearance", callsign=intent.callsign, raw_text=intent.raw_text,
+                                 data={"destination": code})
         if intent.unclear or intent.intent == "other":
             return [self._tx(pos, self.phr.say_again())]
         if intent.intent == "say_again":
@@ -289,6 +302,43 @@ class Brain:
             # initial call without a request ("Delivery, DLH4AB, good day")
             return [self._tx(pos, self.phr.go_ahead(self.station_name(pos)))]
         return [self._tx(pos, self.phr.say_again())]
+
+    def _identify(self, it: PilotIntent) -> None:
+        """First call on the ground sets callsign, type and stand; the config callsign is the fallback."""
+        if self.identified or self.phase != Phase.PARKED:
+            return
+        if t := it.data.get("acf_type"):
+            self.called_type = t
+        if st := it.data.get("stand"):
+            self.stand = self._match_stand(st)
+        if it.callsign:
+            self.identified = True
+            if it.callsign != self.fc.callsign:
+                log.info("callsign from first call: %s (config %s)", it.callsign, self.fc.callsign)
+                self.fc.callsign, self.fc.telephony = it.callsign, None
+                self.phr = Phraseology(self.fc.callsign, None, self.fc.region, self.fc.transition_alt)
+
+    def _match_stand(self, said: str) -> str:
+        """'1' -> the apt.dat start location named '1' / 'Stand 1' / 'Gate 1', else as said."""
+        for g in self.dep.gates:
+            name = g.name.upper()
+            if name == said or name.split()[-1:] == [said] or name.replace(" ", "") == said:
+                return g.name
+        return said
+
+    def _chosen_destination(self, it: PilotIntent) -> str | None:
+        """Answer to 'say destination ICAO': a code from the call, preferably one of the city's."""
+        from ..llm.intent_parser import spoken_codes
+        codes = spoken_codes(it.raw_text)
+        if d := it.data.get("destination"):
+            codes.insert(0, d)
+        for c in codes:
+            if c in self.dest_choices:
+                return c
+        for c in codes:
+            if self._resolve_airport(c, city=False):
+                return c
+        return None
 
     def station_name(self, pos: Position) -> str:
         """'Burlington Delivery': city from the apt.dat frequency names, else airport name."""
@@ -323,8 +373,15 @@ class Brain:
         if icao is None:
             from ..phraseology import letters
             d = dest.upper()
+            city, choices = self._city_airports(d)
+            if len(choices) > 1:
+                self.dest_choices = choices
+                return [self._tx(Position.DELIVERY, self.phr.custom(
+                    f"several airports in {city}, say destination ICAO"))]
+            spoken = letters(d) if len(d) <= 4 else d.title()
             return [self._tx(Position.DELIVERY, self.phr.custom(
-                f"unable to find {d}, say again destination", f"unable to find {letters(d)}, say again destination"))]
+                f"unable to find {d}, say again destination", f"unable to find {spoken}, say again destination"))]
+        self.dest_choices = []
         self.fc.destination = icao
         if self.runway is None:
             self.runway = self._select_dep_runway()
@@ -376,7 +433,7 @@ class Brain:
         s = self.sim
         if self.runway is None:
             self.runway = self._select_dep_runway()
-        cls = taxi.aircraft_class(s.acf_icao or "A320")
+        cls = taxi.aircraft_class(self.acf_type)
         self._new_route(taxi.route_to_runway(self.dep, s.lat, s.lon, self.runway, cls))
         if not self.route.ok:
             log.warning("taxi route not found, using fallback instruction")
@@ -425,7 +482,7 @@ class Brain:
         s = self.sim
         ap = self.field
         gate = self._pick_gate(ap)
-        cls = taxi.aircraft_class(s.acf_icao or "A320")
+        cls = taxi.aircraft_class(self.acf_type)
         if gate is None:
             self.route = None
             return [self._tx(Position.GROUND, self.phr.custom("taxi to parking at your discretion"))]
@@ -572,13 +629,13 @@ class Brain:
 
     def _select_dep_runway(self) -> str:
         e = select_runway(self.dep, self.sim.wind_dir_true, self.sim.wind_speed_kt,
-                          acf_type=self.sim.acf_icao or None)
+                          acf_type=self.acf_type)
         return e.name if e else "??"
 
     def _select_arr_runway(self) -> str:
         ap = self.dest or self.dep
         e = select_runway(ap, self.sim.wind_dir_true, self.sim.wind_speed_kt,
-                          acf_type=self.sim.acf_icao or None)
+                          acf_type=self.acf_type)
         return e.name if e else "??"
 
     def _select_sid(self, rwy: str) -> str | None:
@@ -626,7 +683,7 @@ class Brain:
             self.runway = self._select_dep_runway()
         s = self.sim
         rt = taxi.route_to_runway(self.dep, s.lat, s.lon, self.runway,
-                                  taxi.aircraft_class(s.acf_icao or "A320"))
+                                  taxi.aircraft_class(self.acf_type))
         if not rt.ok or len(rt.nodes) < 2:
             return None
         from ..world.aptdat import bearing_deg
@@ -640,16 +697,30 @@ class Brain:
         names = ["north", "northeast", "east", "southeast", "south", "southwest", "west", "northwest"]
         return names[int((brg + 22.5) // 45) % 8]
 
-    def _resolve_airport(self, code: str) -> str | None:
-        """Validate a destination against apt.dat; 'BOS' -> 'KBOS'. Without an index, trust 4 letters."""
+    def _resolve_airport(self, code: str, city: bool = True) -> str | None:
+        """Destination against apt.dat: 'KBOS', a city with one airport ('Boston', 'New York Kennedy'
+        -> longest city prefix), 'BOS' -> 'KBOS'. Without an index, trust 4 letters."""
         code = code.upper().strip()
         if self.index is None:
-            return code if len(code) == 4 else None
+            return code if len(code) == 4 and code.isalpha() else None
         if code in self.index.entries:
             return code
+        if city:
+            _, found = self._city_airports(code)
+            if found:
+                return found[0] if len(found) == 1 else None  # several: the caller asks for the ICAO
         if len(code) == 3 and "K" + code in self.index.entries:
             return "K" + code
         return None
+
+    def _city_airports(self, name: str) -> tuple[str, list[str]]:
+        """Longest city prefix of what was said: 'NEW YORK KENNEDY' -> ('New York', [...])."""
+        words = name.split() if self.index else []
+        for n in range(len(words), 0, -1):
+            city = " ".join(words[:n])
+            if found := self.index.in_city(city):
+                return city.title(), found
+        return name.title(), []
 
     def _new_squawk(self) -> str:
         while True:
@@ -672,7 +743,7 @@ class Brain:
         gates = [g for g in ap.gates if g.kind == "gate"] or ap.gates
         if not gates:
             return None
-        jets = [g for g in gates if "jets" in g.types] if taxi.aircraft_class(self.sim.acf_icao or "A320") >= "C" else gates
+        jets = [g for g in gates if "jets" in g.types] if taxi.aircraft_class(self.acf_type) >= "C" else gates
         return self._rng.choice(jets or gates)
 
     # -------------------------------------------------------- physical events
@@ -695,12 +766,13 @@ class Brain:
 
     # ------------------------------------------------------------ persistence
     STATE_FIELDS = ("runway", "arr_runway", "sid", "squawk", "assigned_alt", "assigned_hdg",
-                    "cleared_takeoff", "cleared_land", "gate")
+                    "cleared_takeoff", "cleared_land", "gate", "identified", "called_type", "stand")
 
     def snapshot(self) -> dict:
         """What survives a program restart (the taxi route is recomputed on request)."""
         d = {k: getattr(self, k) for k in self.STATE_FIELDS}
-        d.update(phase=self.phase.value, dep=self.dep.icao, destination=self.fc.destination)
+        d.update(phase=self.phase.value, dep=self.dep.icao, destination=self.fc.destination,
+                 callsign=self.fc.callsign)
         return d
 
     def restore(self, d: dict) -> None:
@@ -708,6 +780,9 @@ class Brain:
             if k in d:
                 setattr(self, k, d[k])
         self.fc.destination = d.get("destination") or self.fc.destination
+        if d.get("identified") and d.get("callsign") and d["callsign"] != self.fc.callsign:
+            self.fc.callsign, self.fc.telephony = d["callsign"], None
+            self.phr = Phraseology(self.fc.callsign, None, self.fc.region, self.fc.transition_alt)
         self.phase = Phase(d.get("phase", Phase.PARKED.value))
         if self.phase in ARRIVAL_PHASES:
             self._load_dest()
@@ -735,6 +810,7 @@ class Brain:
         self._new_route(None)
         self.cleared_takeoff = self.cleared_land = False
         self.pending = None
+        self.identified, self.stand, self.dest_choices = False, None, []  # next flight: new first call
         self._set_phase(Phase.PARKED)
 
     def hold_point(self) -> tuple[float, float] | None:

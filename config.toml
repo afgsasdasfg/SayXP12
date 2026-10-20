@@ -7,10 +7,10 @@ host = "localhost"
 port = 8086
 
 [flight]
-callsign = "DLH4AB"          # ICAO callsign or registration ("N123AB", "C-GTLT")
+callsign = "DLH4AB"          # fallback; the first call to Delivery sets it ("A320 Lufthansa 4AB on stand 1")
 telephony = ""               # override spoken prefix, e.g. "Lufthansa"; empty = automatic
 departure = ""               # ICAO; empty = nearest airport to the aircraft
-destination = ""             # ICAO; empty = ask / take from pilot's clearance request
+destination = ""             # ICAO; empty = from the clearance request (ICAO or city)
 cruise_ft = 35000
 initial_alt_ft = 5000
 sid = ""                     # force a SID; empty = pick by first_fix from CIFP or radar vectors

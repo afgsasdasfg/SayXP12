@@ -87,3 +87,13 @@ def test_aircraft_class():
     assert taxi.aircraft_class("A20N") == "C"
     assert taxi.aircraft_class("B77W") == "E"
     assert taxi.aircraft_class("ZZZZ") == "C"
+
+
+def test_airports_by_city(city_index, tmp_path):
+    assert city_index.in_city("Boston") == ["KBOS"]          # heliport does not count
+    assert city_index.in_city("new york") == ["KJFK", "KLGA"]  # untowered strip dropped
+    assert city_index.in_city("Burlington") == ["KBTV"]
+    assert city_index.in_city("Atlantis") == []
+    from atc.world.aptdat import AptIndex
+    cached = AptIndex(tmp_path / "xp", cache_dir=tmp_path / "cache")  # from the json cache
+    assert cached.in_city("New York") == ["KJFK", "KLGA"] and "KBOS" in cached.entries

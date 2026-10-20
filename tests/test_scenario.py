@@ -230,6 +230,9 @@ def test_unknown_destination_is_rejected(kbtv):
     class FakeIndex:
         entries = {"KBOS": (), "KBTV": ()}
 
+        def in_city(self, name):
+            return []
+
     b = Brain(FlightConfig(callsign="DLH4AB"), kbtv, index=FakeIndex())
     p = IntentParser()
     s = sim_at(44.47, -73.15, 119150)
@@ -243,3 +246,49 @@ def test_frequency_nobody_listening(kbtv):
     b = Brain(FlightConfig(callsign="DLH4AB"), kbtv)
     out = say(b, IntentParser(), "request taxi", sim_at(44.47, -73.15, 130000))
     assert out == []
+
+
+def test_vatsim_first_call_sets_callsign_type_stand(kbtv, city_index):
+    """'good day, [type] [callsign] on stand [stand]': the call wins over the config callsign."""
+    b = Brain(FlightConfig(callsign="N123AB"), kbtv, index=city_index)
+    p = IntentParser()
+    s = sim_at(44.47, -73.15, 119150, acf_icao="")
+    out = say(b, p, "Burlington Delivery, good day, A320 Lufthansa 4AB on stand 1, information alpha, "
+                    "request IFR clearance to Boston", s)
+    assert out[0].text.startswith("DLH4AB, cleared to KBOS")
+    assert out[0].spoken.startswith("Lufthansa four Alpha Bravo")
+    assert b.fc.callsign == "DLH4AB" and b.called_type == "A320" and b.acf_type == "A320"
+    assert b.stand == "1"
+    # later calls do not change the callsign
+    say(b, p, "say again, Speedbird 12", s)
+    assert b.fc.callsign == "DLH4AB"
+    # survives a restart
+    b2 = Brain(FlightConfig(callsign="N123AB"), kbtv, index=city_index)
+    b2.restore(b.snapshot())
+    assert b2.phr.cs == "DLH4AB" and b2.stand == "1"
+
+
+def test_config_callsign_is_the_fallback(kbtv):
+    b = Brain(FlightConfig(callsign="DLH4AB", destination="KBOS"), kbtv)
+    out = say(b, IntentParser(), "Burlington delivery, good day, request IFR clearance", sim_at(44.47, -73.15, 119150))
+    assert out[0].text.startswith("DLH4AB, cleared to KBOS")
+
+
+def test_city_with_several_airports_asks_for_icao(kbtv, city_index):
+    b = Brain(FlightConfig(callsign="N123AB"), kbtv, index=city_index)
+    p = IntentParser()
+    s = sim_at(44.47, -73.15, 119150)
+    out = say(b, p, "Burlington Delivery, good day, A320 Lufthansa 4AB on stand 1, "
+                    "request IFR clearance to New York", s)
+    assert out[0].text == "DLH4AB, several airports in New York, say destination ICAO"
+    assert b.squawk is None
+    out = say(b, p, "kilo juliett foxtrot kilo, Lufthansa 4AB", s)
+    assert out[0].text.startswith("DLH4AB, cleared to KJFK") and b.fc.destination == "KJFK"
+
+
+def test_unknown_city_is_rejected(kbtv, city_index):
+    b = Brain(FlightConfig(callsign="N123AB"), kbtv, index=city_index)
+    out = say(b, IntentParser(), "Delivery, good day, A320 Lufthansa 4AB on stand 1, request clearance to Atlantis",
+              sim_at(44.47, -73.15, 119150))
+    assert out[0].text == "DLH4AB, unable to find ATLANTIS, say again destination"
+    assert "Atlantis" in out[0].spoken
