@@ -32,6 +32,7 @@ INTENTS = [
     "request_runway",       # "request runway 06R" (another landing runway)
     "report_final",         # "established ILS 27", "on final", request landing
     "report_position",
+    "report_parked",        # "on stand, shutting down" / "parked" at the end of the flight
     "say_again",            # pilot asks ATC to repeat
     "radio_check",          # "radio check, how do you read"
     "request_qnh",          # "request QNH" / "say altimeter"
@@ -390,6 +391,9 @@ def classify_rules(text: str) -> str:
         return "request_pushback"
     if re.search(r"\b((?:request(?:ing)?|rest) start|ready (?:to|for) start)", t):  # Whisper: "rest start"
         return "request_startup"
+    if re.search(r"\bshut(?:ting)? ?down\b|\bparked\b|\bon (?:the )?blocks\b|\bin position on stand\b", t) \
+            and "request" not in t:
+        return "report_parked"
     if re.search(r"\brequest(?:ing)? (?:a )?new (?:taxi )?(?:route|routing|instructions)\b|\breturn to (?:the )?route\b", t):
         return "request_taxi"  # after "missed your turn, hold position and advise"
     if re.search(r"\b(request(?:ing)? taxi|ready (?:to|for) taxi|taxi to (?:the )?(?:gate|stand|parking)|request taxi)\b", t):
