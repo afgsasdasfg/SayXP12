@@ -826,3 +826,22 @@ def test_missed_turn_then_new_route_to_the_same_stand(ulli, uuee):
     assert distance_to_route(uuee, b.route, off.lat, off.lon) < 60
     for text in ("Aeroflot 51, holding position", "DLH4AB request new route"):
         assert not p.parse_rules(text).unclear, text
+
+
+def test_shutting_down_on_stand_ends_the_flight(ulli, uuee):
+    """Live UUEE: 'Ground, Aeroflot 51, shutting down' got 'say again'."""
+    p = IntentParser()
+    for text in ("Ground, Aeroflot 51, shutting down", "on stand 49, shutting down, Aeroflot 51",
+                 "Aeroflot 51 parked"):
+        assert p.parse_rules(text).intent == "report_parked", text
+    for text in ("Ground, good day, A320 Aeroflot 51 on stand 49, request taxi",
+                 "Delivery, Aeroflot 51 on stand 12, request IFR clearance"):
+        assert p.parse_rules(text).intent != "report_parked", text
+    b, m = _arrival_brain(ulli, uuee)
+    b.phase = Phase.TAXI_IN
+    gate = uuee.gates[0]
+    out = say(b, p, "Ground, Aeroflot 51, shutting down", sim_at(gate.lat, gate.lon, UUEE_GND, **wx()))
+    assert out[0].text.endswith("roger, good day") and b.phase == Phase.PARKED and b.dep is uuee
+    # after the sim already saw the shutdown: same answer, no "say again"
+    out = say(b, p, "Aeroflot 51 parked", sim_at(gate.lat, gate.lon, UUEE_GND, **wx()))
+    assert out[0].text.endswith("roger, good day")

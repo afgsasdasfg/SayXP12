@@ -318,6 +318,10 @@ class Brain:
         if pos == Position.DELIVERY and self.dest_choices and (code := self._chosen_destination(intent)):
             intent = PilotIntent("request_clearance", callsign=intent.callsign, raw_text=intent.raw_text,
                                  data={"destination": code})
+        if intent.intent == "report_parked" and self.phase in (Phase.TAXI_IN, Phase.PARKED):
+            if self.phase == Phase.TAXI_IN:
+                self.reset_for_next_flight()  # the flight ends here; the next one starts from this field
+            return [self._tx(pos, self.phr.custom("roger, good day"))]
         if (self.missed_turn and pos == Position.GROUND and not intent.unclear
                 and self.phase in (Phase.TAXI_OUT, Phase.TAXI_IN)
                 and intent.intent not in ("say_again", "radio_check", "request_qnh")):
