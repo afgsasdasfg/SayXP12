@@ -25,7 +25,9 @@ templates decide *how* it is said. The LLM never invents frequencies, taxiways, 
 | Approach: Center → Approach handoff, vectors to the ILS (CIFP final), landing / vacate / taxi to stand | ✅ (vectors not flown live yet) |
 | PTT (keyboard + joystick via X-Plane), faster-whisper STT, Piper TTS with radio effect, voice per position | ✅ |
 | Intent parser: Gemini / Ollama / rule-based fallback | ✅ |
-| STARs, TOD, ATIS, traffic (TCAS), VFR, overlay window | ⏳ stage 2–3 |
+| Planned route (SimBrief): vectors end "proceed direct <next route point>"; STAR from CIFP with the descent, vectors to the ILS from its last fix | ✅ (not flown live yet) |
+| Top of descent: Center calls "descend FL100" by itself, 3 NM per 1000 ft to the field (or FL100 at the planned STAR entry) | ✅ (not flown live yet) |
+| ATIS, traffic (TCAS), VFR, overlay window | ⏳ stage 2–3 |
 
 ## Install (Windows)
 
@@ -75,7 +77,9 @@ automatically (a few seconds per phrase). To enable the GPU:
 Edit `config.toml` (callsign, destination, cruise altitude, PTT key). To fly the plan from SimBrief, put
 your Pilot ID (simbrief.com → Account Settings) in `[simbrief] pilot_id`: at start the latest OFP
 gives the destination, cruise level, callsign and first fix, and Delivery clears you via the
-"flight planned route" (FAA: "then as filed"). Check it with `python -m atc.world.simbrief <pilot_id>`.
+"flight planned route" (FAA: "then as filed"). Radar vectors end with "proceed direct" the next point
+of the planned route, and the descent comes with a STAR from the destination's CIFP (the planned one
+when it is there). Without a plan: "proceed direct <destination>" and vectors without a STAR. Check it with `python -m atc.world.simbrief <pilot_id>`.
 Then:
 
 ```bash
@@ -133,6 +137,6 @@ tests/fixtures/      KBTV taxi network excerpt from the X-Plane 12 apt.dat
 ## Known limitations
 
 - No Center/Approach frequencies in apt.dat: Center uses `atc.center_khz` from the config.
-- Approach vectors to the final (downwind, base, 30° intercept) from the CIFP FAF; no STARs yet. Without CIFP the FAF comes from the field elevation and a 3° glideslope.
+- Approach vectors to the final (downwind, base, 30° intercept) from the CIFP FAF. STARs only with a SimBrief plan; a CIFP STAR without runway transitions (UUEE: BUKU3E/BUKU3F) is taken as serving every runway, so the letter is the planned one, not checked against the runway. Without CIFP the FAF comes from the field elevation and a 3° glideslope.
 - A missing or broken taxi network gives "taxi to runway X at your discretion".
 - Taxi cost has no sharp-turn penalty yet.

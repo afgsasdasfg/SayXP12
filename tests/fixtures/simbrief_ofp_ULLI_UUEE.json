@@ -1,16 +1,25 @@
 {
   "fetch": {"userid": "123456", "static_id": "", "status": "Success"},
   "general": {"icao_airline": "AFL", "flight_number": "51", "initial_altitude": "35000",
-              "route": "SUMAN1A SUMAN R805 BITSA DCT UUEE"},
+              "route": "SUMAN1A SUMAN R805 BITSA DCT BUKUB BUKU3E"},
   "origin": {"icao_code": "ULLI", "iata_code": "LED", "plan_rwy": "28L", "name": "PULKOVO"},
   "destination": {"icao_code": "UUEE", "iata_code": "SVO", "plan_rwy": "24L", "name": "SHEREMETYEVO"},
   "aircraft": {"icaocode": "A20N", "name": "A320NEO"},
-  "atc": {"callsign": "AFL51", "initial_spd": "N0450", "initial_alt": "F350", "route": "SUMAN1A SUMAN R805 BITSA"},
+  "atc": {"callsign": "AFL51", "initial_spd": "N0450", "initial_alt": "F350", "route": "SUMAN1A SUMAN R805 BITSA DCT BUKUB BUKU3E"},
   "navlog": {"fix": [
-    {"ident": "LI001", "type": "wpt", "via_airway": "SUMAN1A", "is_sid_star": "1", "altitude_feet": "3000"},
-    {"ident": "SUMAN", "type": "wpt", "via_airway": "SUMAN1A", "is_sid_star": "1", "altitude_feet": "12000"},
-    {"ident": "TOC", "type": "ltlg", "via_airway": "R805", "is_sid_star": "0", "altitude_feet": "35000"},
-    {"ident": "BITSA", "type": "wpt", "via_airway": "R805", "is_sid_star": "0", "altitude_feet": "35000"},
-    {"ident": "UUEE", "type": "apt", "via_airway": "DCT", "is_sid_star": "0", "altitude_feet": "628"}
+    {"ident": "LI001", "type": "wpt", "via_airway": "SUMAN1A", "is_sid_star": "1", "altitude_feet": "3000",
+     "pos_lat": "59.780000", "pos_long": "30.050000"},
+    {"ident": "SUMAN", "type": "wpt", "via_airway": "SUMAN1A", "is_sid_star": "1", "altitude_feet": "12000",
+     "pos_lat": "59.550000", "pos_long": "30.600000"},
+    {"ident": "TOC", "type": "ltlg", "via_airway": "R805", "is_sid_star": "0", "altitude_feet": "35000",
+     "pos_lat": "59.300000", "pos_long": "31.100000"},
+    {"ident": "BITSA", "type": "wpt", "via_airway": "R805", "is_sid_star": "0", "altitude_feet": "35000",
+     "pos_lat": "57.800000", "pos_long": "34.000000"},
+    {"ident": "BUKUB", "type": "wpt", "via_airway": "BUKU3E", "is_sid_star": "1", "altitude_feet": "12000",
+     "pos_lat": "56.750000", "pos_long": "36.400000"},
+    {"ident": "DENZA", "type": "wpt", "via_airway": "BUKU3E", "is_sid_star": "1", "altitude_feet": "8000",
+     "pos_lat": "56.450000", "pos_long": "36.900000"},
+    {"ident": "UUEE", "type": "apt", "via_airway": "DCT", "is_sid_star": "0", "altitude_feet": "628",
+     "pos_lat": "55.972642", "pos_long": "37.414589"}
   ]}
 }

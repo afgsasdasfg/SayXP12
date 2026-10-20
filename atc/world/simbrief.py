@@ -10,12 +10,19 @@ from __future__ import annotations
 import logging
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 log = logging.getLogger("simbrief")
 
 FETCH_URL = "https://www.simbrief.com/api/xml.fetcher.php"
 _SID = re.compile(r"^[A-Z]{2,5}\d[A-Z]?$")
+
+
+@dataclass
+class RoutePoint:
+    ident: str
+    lat: float
+    lon: float
 
 
 @dataclass
@@ -29,6 +36,10 @@ class FlightPlan:
     sid: str | None = None          # as planned; the brain still picks one for the runway in use
     sid_exit: str | None = None     # last fix of the SID = first enroute fix, chooses the SID from CIFP
     origin_rwy: str | None = None
+    # enroute points with coordinates, from the SID exit to the STAR entry: what ATC sends the
+    # pilot "direct" to when radar vectors end
+    waypoints: list[RoutePoint] = field(default_factory=list)
+    star: str | None = None         # as planned; the brain picks one for the arrival runway
 
     def summary(self) -> str:
         fl = f"FL{self.cruise_ft // 100}" if self.cruise_ft else "FL?"
@@ -38,6 +49,13 @@ class FlightPlan:
 def _int(v) -> int | None:
     try:
         return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def _float(v) -> float | None:
+    try:
+        return float(v)
     except (TypeError, ValueError):
         return None
 
@@ -65,10 +83,22 @@ def parse_ofp(d: dict) -> FlightPlan:
         origin_rwy=orig.get("plan_rwy") or None,
     )
     # SID and its exit fix from the navlog; the route string as fallback ("LUGA1A LUGA R805 ...")
-    sid_fixes = [f for f in _list((d.get("navlog") or {}).get("fix"))
-                 if str(f.get("is_sid_star")) == "1" and f.get("type") != "ltlg"
-                 and _SID.match(str(f.get("via_airway", "")))]
+    navlog = [f for f in _list((d.get("navlog") or {}).get("fix")) if f.get("type") != "ltlg"]
+    proc = [str(f.get("is_sid_star")) == "1" and bool(_SID.match(str(f.get("via_airway", ""))))
+            for f in navlog]
+    first_enroute = next((i for i, p in enumerate(proc) if not p), len(navlog))
+    sid_fixes = [f for f, p in zip(navlog[:first_enroute], proc) if p]
     sid_fixes = [f for f in sid_fixes if f["via_airway"] == sid_fixes[0]["via_airway"]] if sid_fixes else []
+    star_fixes = [f for f, p in zip(navlog[first_enroute:], proc[first_enroute:]) if p]
+    if star_fixes:
+        fp.star = star_fixes[0]["via_airway"]
+    # SID exit, enroute points, STAR entry (the STAR itself is ATC's to give)
+    pts = sid_fixes[-1:] + [f for f, p in zip(navlog[first_enroute:], proc[first_enroute:])
+                            if not p and f.get("type") != "apt"] + star_fixes[:1]
+    for f in pts:
+        lat, lon = _float(f.get("pos_lat")), _float(f.get("pos_long"))
+        if f.get("ident") and lat is not None and lon is not None:
+            fp.waypoints.append(RoutePoint(str(f["ident"]).upper(), lat, lon))
     if sid_fixes:
         fp.sid, fp.sid_exit = sid_fixes[0]["via_airway"], sid_fixes[-1].get("ident")
     else:
@@ -90,6 +120,8 @@ def apply_plan(fc, fp: FlightPlan) -> None:
     fc.acf_type = fp.acf_type or fc.acf_type
     if fp.sid_exit and not fc.sid:
         fc.first_fix = fp.sid_exit
+    fc.route_points = list(fp.waypoints)
+    fc.star = fp.star
 
 
 def fetch(pilot_id: str = "", username: str = "", timeout_s: float = 10) -> FlightPlan:
