@@ -12,6 +12,7 @@ from atc.llm.intent_parser import IntentParser
 from atc.state import Phase, Position
 from atc.world.aptdat import bearing_deg
 from atc.world.cifp import parse_cifp, star_entries, star_path, stars_for_runway
+from atc.world.runways import select_runway
 from atc.world.simbrief import apply_plan, parse_ofp
 from conftest import FIX
 from test_approach import CTR, UUEE_MAGVAR, fly_vectors, offset
@@ -174,3 +175,59 @@ def test_top_of_descent_with_the_star(ulli, uuee, xp_root):
     assert len(out) == 1 and out[0].proactive
     assert out[0].text == "AFL51, descend FL100, cleared BUKU3E arrival, expect ILS approach runway 24L"
     assert b.phase == Phase.ARRIVAL and b.assigned_alt == 10000
+
+
+# ------------------------------------------------- arrival runway by the surface wind
+def test_uuee_runway_06_with_wind_080_6(uuee):
+    assert select_runway(uuee, 80, 6, acf_type="A20N").name.startswith("06")
+
+
+def test_arrival_runway_from_surface_wind_not_wind_aloft(ulli, uuee, xp_root):
+    """Live ULLI -> UUEE: at FL350 the westerly jet stream picked 24L though UUEE had 080/6."""
+    b = planned_brain(ulli, uuee, xp_root)
+    b._set_phase(Phase.ENROUTE)
+    s = air(57.3, 35.0, CTR, 35000, wind_dir_true=260, wind_speed_kt=80,
+            sfc_wind_dir_true=80, sfc_wind_speed_kt=6)
+    out = say(b, IntentParser(), "Center, AFL51 request descent", s)
+    assert b.arr_runway.startswith("06"), out[0].text
+    assert f"expect ILS approach runway {b.arr_runway}" in out[0].text
+
+
+def test_surface_wind_falls_back_to_aircraft_wind():
+    s = air(57.3, 35.0, CTR, 35000, wind_dir_true=260, wind_speed_kt=80)
+    assert s.surface_wind == (260, 80)
+    low = air(57.3, 35.0, CTR, 1000, wind_dir_true=75, wind_speed_kt=5, sfc_wind_dir_true=80, sfc_wind_speed_kt=6)
+    assert low.surface_wind == (75, 5)   # near the ground the aircraft's own wind is the surface wind
+
+
+def test_pilot_requests_another_runway_on_the_star(ulli, uuee, xp_root):
+    b = planned_brain(ulli, uuee, xp_root)
+    p = IntentParser()
+    b._set_phase(Phase.ENROUTE)
+    s = air(57.3, 35.0, CTR, 35000, **wx())
+    say(b, p, "Center, AFL51 request descent", s)
+    assert b.arr_runway == "24L" and b.star == "BUKU3E"
+    b.pending = None
+    s = air(56.5, 36.9, CTR, 12000, **wx())
+    out = say(b, p, "Center, AFL51 request runway 06R", s)
+    assert "AFL51, runway 06R approved, cleared BUKU3E arrival, expect ILS approach runway 06R" == out[0].text
+    assert b.arr_runway == "06R" and b.star_fixes[-1] == "KEZVU" and b.final.course_mag == 63.0
+    assert say(b, p, "runway 06R, cleared BUKU 3 echo arrival, AFL51", s) == [] and b.pending is None
+    out = say(b, p, "Center, AFL51 request runway 09", s)
+    assert out[0].text == "AFL51, unable runway 09, not available" and b.arr_runway == "06R"
+
+
+def test_pilot_requests_another_runway_on_vectors(ulli, uuee, xp_root):
+    b = planned_brain(ulli, uuee, xp_root, nav=False)
+    p = IntentParser()
+    b._set_phase(Phase.ARRIVAL)
+    b._load_dest()
+    b.approach_handoff = True
+    s = air(56.3, 37.0, UUEE_APP, 6000, **wx())
+    b.star, b.sim = None, s
+    out = b._start_vectors(Position.APPROACH)
+    assert "runway 24L" in out[0].text and b.phase == Phase.APPROACH
+    b.pending = None
+    out = say(b, p, "Approach, AFL51 request ILS runway 06C", s)
+    assert out[0].text.startswith("AFL51, runway 06C approved, ") and "ILS approach runway 06C" in out[0].text
+    assert b.arr_runway == "06C" and b.final is not None and b.vector is not None

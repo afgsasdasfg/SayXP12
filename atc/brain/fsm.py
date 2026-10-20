@@ -19,7 +19,7 @@ from ..world import navdata, taxi
 from ..world.aptdat import Airport, AptIndex, distance_m
 from ..world.cifp import (cifp_file, final_for_runway, parse_cifp, parse_finals, sids_for_runway,
                           star_entries, star_path, stars_for_runway)
-from ..world.runways import select_runway
+from ..world.runways import runway_requirements, select_runway
 from . import vectors
 
 log = logging.getLogger("brain")
@@ -520,7 +520,7 @@ class Brain:
         ends = [e for e in ends if e is not None]
         if not ends:
             return runway_name.split("/")[0]
-        return max(ends, key=lambda e: wind_components(e, self.sim.wind_dir_true, self.sim.wind_speed_kt)[0]).name
+        return max(ends, key=lambda e: wind_components(e, *self.sim.surface_wind)[0]).name
 
     def has_next_leg(self) -> bool:
         return bool(self.route and self.route.ok and self.leg_idx < len(self.route.legs) - 1)
@@ -570,7 +570,7 @@ class Brain:
             rwy = self.arr_runway or self._select_arr_runway()
             self.arr_runway = rwy
             self.cleared_land = True
-            tx = self._tx(T, self.phr.cleared_land(rwy, wind(self.sim.wind_dir_true, self.sim.wind_speed_kt)), True)
+            tx = self._tx(T, self.phr.cleared_land(rwy, self._wind()), True)
             self._expect(tx, {"runway": rwy, "cleared_land": True}, set())
             return [tx]
         return None
@@ -580,7 +580,7 @@ class Brain:
         on = on_runway(self.dep, self.sim.lat, self.sim.lon)
         self.cleared_takeoff = True
         tx = self._tx(Position.TOWER, self.phr.cleared_takeoff(
-            rwy, wind(self.sim.wind_dir_true, self.sim.wind_speed_kt)), True)
+            rwy, self._wind()), True)
         self._set_phase(Phase.TAKEOFF)
         self._expect(tx, {"runway": rwy, "cleared_takeoff": True}, {"cleared_takeoff"} if not on else set())
         return [tx]
@@ -607,6 +607,8 @@ class Brain:
 
     def _on_center(self, it: PilotIntent):
         C = Position.CENTER
+        if (out := self._runway_request(C, it)) is not None:
+            return out
         if it.intent in ("check_in", "request_climb", "report_position") and self.phase in (
                 Phase.DEPARTURE, Phase.ENROUTE):
             self._set_phase(Phase.ENROUTE)
@@ -697,6 +699,8 @@ class Brain:
 
     def _on_approach(self, it: PilotIntent):
         A = Position.APPROACH
+        if (out := self._runway_request(A, it)) is not None:
+            return out
         if self.phase in (Phase.ARRIVAL, Phase.ENROUTE) and it.intent in (
                 "check_in", "request_approach", "report_position", "request_descent"):
             self._set_phase(Phase.ARRIVAL)
@@ -704,6 +708,43 @@ class Brain:
         if self.phase == Phase.APPROACH:
             return self._on_vectors(it)
         return self._on_departure(it) if self.phase in (Phase.TAKEOFF, Phase.DEPARTURE) else None
+
+    def _runway_request(self, pos: Position, it: PilotIntent) -> list[Transmission] | None:
+        """'request runway 06R' / 'request ILS runway 06R' on the arrival: approved when the
+        destination has it and it is long enough; the STAR and vectors are redone for it."""
+        rwy = it.data.get("runway") or it.readback.get("runway")
+        if it.intent not in ("request_runway", "request_approach") or not rwy:
+            return None
+        if self.phase not in (Phase.ENROUTE, Phase.ARRIVAL, Phase.APPROACH) or self.appr_cleared:
+            return None
+        self._load_dest()
+        ap = self.dest
+        if ap is None:
+            return None
+        end = ap.runway_end(rwy)
+        need_len, _ = runway_requirements(self.acf_type)
+        if end is None or end.length_m < need_len:
+            return [self._tx(pos, self.phr.unable_runway(rwy))]
+        if rwy == self.arr_runway:
+            return None
+        log.info("pilot requests runway %s instead of %s", rwy, self.arr_runway)
+        self.arr_runway, self.final, self.vector = rwy, None, None
+        ok_t, ok_s = self.phr.runway_approved(rwy)
+        if self.phase == Phase.APPROACH:
+            out = self._start_vectors(pos)
+            tx = out[0]
+            tx.text, tx.spoken = f"{ok_t}, {tx.text.split(', ', 1)[1]}", f"{ok_s}, {tx.spoken.split(', ', 1)[1]}"
+            return out
+        had_star, self.star, self.star_fixes = self.star is not None, None, []
+        if had_star and self._assign_star():
+            self._assign_heading(None)
+            t, sp = self.phr.star_clearance(self.star, self._appr_name(), rwy)
+        else:
+            self.final = self._build_final()
+            t, sp = self.phr.expect_approach(self._appr_name(), rwy)
+        tx = self._tx(pos, (f"{ok_t}, {t}", f"{ok_s}, {sp}"), True)
+        self._expect(tx, {"runway": rwy}, set())
+        return [tx]
 
     # ------------------------------------------------------- route and STAR
     def next_route_point(self):
@@ -986,15 +1027,19 @@ class Brain:
             return None  # "fly heading"
         return "right" if diff > 0 else "left"
 
+    def _wind(self) -> tuple[str, str]:
+        """Surface wind as Tower gives it: magnetic."""
+        return wind(*self.sim.surface_wind, self.magvar)
+
     def _select_dep_runway(self) -> str:
-        e = select_runway(self.dep, self.sim.wind_dir_true, self.sim.wind_speed_kt,
-                          acf_type=self.acf_type)
+        e = select_runway(self.dep, *self.sim.surface_wind, acf_type=self.acf_type)
         return e.name if e else "??"
 
     def _select_arr_runway(self) -> str:
         ap = self.dest or self.dep
-        e = select_runway(ap, self.sim.wind_dir_true, self.sim.wind_speed_kt,
-                          acf_type=self.acf_type)
+        e = select_runway(ap, *self.sim.surface_wind, acf_type=self.acf_type)
+        log.info("arrival runway %s at %s, surface wind %03.0f/%.0f", e.name if e else "??", ap.icao,
+                 *self.sim.surface_wind)
         return e.name if e else "??"
 
     def _select_sid(self, rwy: str) -> str | None:

@@ -29,6 +29,7 @@ INTENTS = [
     "request_direct",       # "request direct VUZPU"
     "request_descent",
     "request_approach",
+    "request_runway",       # "request runway 06R" (another landing runway)
     "report_final",         # "established ILS 27", "on final", request landing
     "report_position",
     "say_again",            # pilot asks ATC to repeat
@@ -395,6 +396,8 @@ def classify_rules(text: str) -> str:
         return "ready_for_departure"
     if re.search(r"\b(established|on final|final runway|request(?:ing)? landing|inbound for landing)\b", t):
         return "report_final"
+    if re.search(r"\brequest(?:ing)? (?:the )?runway\b", t):
+        return "request_runway"
     if re.search(r"\brequest(?:ing)? (?:the )?(?:ils|rnav|visual|approach)\b", t):
         return "request_approach"
     if re.search(r"\brequest(?:ing)? direct\b", t):
@@ -456,6 +459,8 @@ class IntentParser:
         intent = classify_rules(text)
         slots = extract_slots(text)
         data = {k: slots[k] for k in ("destination", "gate", "fix") if k in slots}
+        if intent in ("request_runway", "request_approach") and "runway" in slots:
+            data["runway"] = slots["runway"]
         if intent in ("request_climb", "request_descent"):
             data.update({k: slots[k] for k in ("altitude", "flight_level") if k in slots})
         ident = extract_identity(text)

@@ -304,6 +304,17 @@ class Phraseology:
         return self._out(f"unable direct {fix}, point unknown, say again",
                          f"unable direct {letters(fix)}, point unknown, say again")
 
+    def runway_approved(self, rwy: str) -> tuple[str, str]:
+        return self._out(f"runway {rwy} approved", f"runway {runway(rwy)} approved")
+
+    def unable_runway(self, rwy: str) -> tuple[str, str]:
+        return self._out(f"unable runway {rwy}, not available", f"unable runway {runway(rwy)}, not available")
+
+    @staticmethod
+    def expect_approach(appr: tuple[str, str], runway_end: str) -> tuple[str, str]:
+        return (f"expect {appr[0]} approach runway {runway_end}",
+                f"expect {appr[1]} approach runway {runway(runway_end)}")
+
     @staticmethod
     def star_clearance(star: str, appr: tuple[str, str], runway_end: str) -> tuple[str, str]:
         """'cleared BUKU3E arrival, expect ILS approach runway 24L' (no callsign: joined to a descent)."""
