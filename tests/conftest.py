@@ -33,3 +33,13 @@ def ulli():
 def uuee():
     """Sheremetyevo, same excerpt as ulli."""
     return _fixture_airport("UUEE")
+
+
+@pytest.fixture
+def xp_root(tmp_path):
+    """A fake X-Plane folder with the real CIFP files of KBTV and UUEE (X-Plane 12 default data)."""
+    d = tmp_path / "Resources" / "default data" / "CIFP"
+    d.mkdir(parents=True)
+    for f in (FIX / "CIFP").glob("*.dat"):
+        (d / f.name).write_bytes(f.read_bytes())
+    return tmp_path
