@@ -659,3 +659,14 @@ def test_ulli_icao_and_unique_city(ulli, uuee, city_index):
         b = Brain(FlightConfig(), uuee, index=city_index)
         out = say(b, p, f"Delivery, good day, A20N DLH4AB on stand {gate.name}, request IFR clearance to {said}", s)
         assert out[0].text.startswith("DLH4AB, cleared to ULLI"), said
+
+
+def test_callsign_from_radio_check_on_any_frequency(ulli):
+    """Live test ULLI: the first call was a radio check on Center 127.9, misheard by Whisper."""
+    b = Brain(FlightConfig(callsign="DLH4AB"), ulli)
+    assert "Aeroflot" in b.stt_prompt() and "Lufthansa four" not in b.stt_prompt()
+    stand = next(g for g in ulli.gates if g.name == "101A")
+    out = say(b, IntentParser(), "Terrific, good day, Airflot 51, radio check.",
+              sim_at(stand.lat, stand.lon, 127900, **wx()))
+    assert out[0].text.startswith("AFL51, ") and b.fc.callsign == "AFL51"
+    assert "Aeroflot five one" in b.stt_prompt()

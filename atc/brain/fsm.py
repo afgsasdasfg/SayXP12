@@ -209,7 +209,10 @@ class Brain:
         from ..phraseology import taxiway as spoken_twy
         # taxiways as they are said ("Golf, Mike"): Whisper heard "G M" as "go with mic"
         twys_spoken = ", ".join(spoken_twy(t) for t in twys)
-        return (f"{stations}, good day, {self.phr.cs_spoken}, radio check. {ap.icao} {ap.name}. Runway "
+        # before the first call the callsign is unknown: airline names, not the config fallback
+        # (Whisper heard "Aeroflot" as "Airflot")
+        who = self.phr.cs_spoken if self.identified else "Aeroflot, Rossiya, Lufthansa, Speedbird"
+        return (f"{stations}, good day, A320 {who}, radio check. {ap.icao} {ap.name}. Runway "
                 + ", ".join(e.name for r in ap.runways for e in r.ends)
                 + f". Taxi via {twys_spoken}, hold short. Squawk, QNH, flight level, cleared, readback, "
                   "decimal, on stand, request IFR clearance.")

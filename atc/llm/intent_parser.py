@@ -175,6 +175,16 @@ def _flight_id(words: list[str]) -> tuple[str, int]:
     return (out, n) if out[:1].isdigit() and len(out) <= 6 else ("", 0)
 
 
+def _airline(tel: str) -> str | None:
+    """Telephony -> ICAO prefix, tolerant to Whisper spellings ("airflot" -> AFL)."""
+    if tel in _TELEPHONY:
+        return _TELEPHONY[tel]
+    if len(tel) < 5 or not tel.isalpha():
+        return None
+    close = difflib.get_close_matches(tel, _TELEPHONY.keys(), n=1, cutoff=0.8)
+    return _TELEPHONY[close[0]] if close else None
+
+
 def _callsign(t: str) -> tuple[str, int, int] | None:
     """(callsign, first word, end word) in the normalised transmission."""
     words = t.split()
@@ -184,10 +194,10 @@ def _callsign(t: str) -> tuple[str, int, int] | None:
                 return w.upper(), i, i + 1
         for n in (2, 1):  # "air france 123", "lufthansa 4 alpha bravo"
             tel = "".join(words[i:i + n])
-            if len(words[i:i + n]) == n and tel in _TELEPHONY:
+            if len(words[i:i + n]) == n and (icao := _TELEPHONY.get(tel) if n > 1 else _airline(tel)):
                 fid, used = _flight_id(words[i + n:i + n + 4])
                 if fid:
-                    return _TELEPHONY[tel] + fid, i, i + n + used
+                    return icao + fid, i, i + n + used
     for i, w in enumerate(words):  # registrations: "n123ab", "november 123 alpha bravo"
         if re.fullmatch(r"n\d{1,5}[a-z]{0,2}", w):
             return w.upper(), i, i + 1
