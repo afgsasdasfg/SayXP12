@@ -726,3 +726,34 @@ def test_departure_gives_further_climb_before_level_off(ulli):
     b.pending = None
     out = ticks(m, air(59.7, 30.3, ULLI_DEP, 3700, vs_fpm=2000, **wx()))
     assert len(out) == 1 and out[0].position == Position.DEPARTURE and "climb FL100" in out[0].text
+
+
+def test_center_request_direct(ulli, tmp_path):
+    """Live: "Center, Aeroflot 51, request direct Victor uniform, Zulu Papa uniform" got "say again"."""
+    data = tmp_path / "Resources" / "default data"
+    data.mkdir(parents=True)
+    (data / "earth_fix.dat").write_text("I\n1200 Version\n\n 57.512345  33.123456 VUZPU ENRT UU 2097236 VUZPU\n99\n")
+    (data / "earth_nav.dat").write_text("I\n1200 Version\n\n3  55.97  37.41  630 11420 130 0.0 SMR ENRT UU SHEREMETYEVO VOR/DME\n99\n")
+    b, m, p = _climbing_out(ulli)
+    b.xp_root = tmp_path
+    ticks(m, air(59.7, 30.3, ULLI_DEP, 8700, vs_fpm=2000, **wx()), 1)
+    b.pending = None
+    s = air(59.6, 30.5, CTR, 9000, **wx())
+    say(b, p, "Center, DLH4AB passing 9000 climbing flight level 100", s)
+    say(b, p, "climb flight level 350, direct UUEE, DLH4AB", s)
+    out = say(b, p, "Center, DLH4AB, request direct Victor uniform, Zulu Papa uniform.", s)
+    assert "proceed direct VUZPU" in out[0].text and b.pending.expected == {"fix": "VUZPU"}
+    assert say(b, p, "direct victor uniform zulu papa uniform, DLH4AB", s) == []
+    out = say(b, p, "Center, DLH4AB request direct SMR", s)
+    assert "proceed direct SMR" in out[0].text
+    say(b, p, "proceed direct SMR, DLH4AB", s)
+    out = say(b, p, "Center, DLH4AB request direct Kilo Lima Mike November Oscar", s)
+    assert "unable direct KLMNO, point unknown" in out[0].text
+
+
+def test_departure_request_direct_ends_vectors(ulli):
+    b, m, p = _climbing_out(ulli)
+    assert b.assigned_hdg is not None
+    out = say(b, p, "Departure, DLH4AB request direct to ABUBA", air(59.7, 30.3, ULLI_DEP, 6000, **wx()))
+    assert out[0].position == Position.DEPARTURE and "proceed direct ABUBA" in out[0].text
+    assert b.assigned_hdg is None
