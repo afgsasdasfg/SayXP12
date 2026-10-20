@@ -373,6 +373,113 @@ def test_full_flight_radio_check_to_stand(kbtv):
     assert b.phase == Phase.PARKED and b.dep is kbtv and b.squawk is None
 
 
+
+# ULLI -> UUEE: the route of the live arrival test (flight_test_plan_ULLI-UUEE.md).
+ULLI_DL, ULLI_GND, ULLI_TWR, ULLI_DEP = 121900, 121700, 118100, 120300
+UUEE_APP, UUEE_TWR, UUEE_GND = 126600, 118700, 123600
+UUEE_VACATE = (55.970157, 37.414127)  # taxiway node beside 24L, ~1700 m from its threshold
+
+
+class RouteIndex:
+    """AptIndex stand-in for ULLI -> UUEE: only the destination needs to load."""
+
+    def __init__(self, uuee):
+        self.uuee = uuee
+        self.entries = {"ULLI": ("x", 0, 59.800277778, 30.2625), "UUEE": ("x", 0, 55.970167, 37.407833)}
+
+    def load(self, icao):
+        if icao != "UUEE":
+            raise KeyError(icao)
+        return self.uuee
+
+
+def wx(**kw):
+    """Pulkovo and Sheremetyevo: same westerly wind, runways 28L and 24L in use."""
+    return dict(wind_dir_true=280, wind_speed_kt=12, **kw)
+
+
+def test_full_flight_ulli_to_uuee(ulli, uuee):
+    b = Brain(FlightConfig(callsign="DLH4AB"), ulli, index=RouteIndex(uuee))
+    m = Monitor(b)
+    p = IntentParser()
+    stand = next(g for g in ulli.gates if g.name == "101A")
+    at = lambda khz, **kw: sim_at(stand.lat, stand.lon, khz, **wx(**kw))  # noqa: E731
+
+    # --- Pulkovo Delivery: radio check, clearance (destination only named in the request)
+    out = say(b, p, "Delivery, Lufthansa four alpha bravo, radio check", at(ULLI_DL))
+    assert "read you five" in out[0].text
+    out = say(b, p, "Delivery, DLH4AB request IFR clearance to UUEE", at(ULLI_DL))
+    assert "cleared to UUEE via radar vectors, runway 28L" in out[0].text and "departure frequency 120.3" in out[0].text
+    out = say(b, p, f"cleared UUEE runway 28 left climb 5000 squawk {b.squawk} DLH4AB", at(ULLI_DL))
+    assert "contact ground 121.7" in out[0].text and b.phase == Phase.CLEARANCE
+
+    # --- Ground: push, taxi to 28L, handoff to the 10R/28L tower (first tower frequency: 118.1)
+    out = say(b, p, "Ground, DLH4AB request push and start", at(ULLI_GND))
+    assert "push and start approved" in out[0].text
+    out = say(b, p, "DLH4AB request taxi", at(ULLI_GND))
+    assert "taxi to holding point runway 28L via D, A, hold short runway 28L" in out[0].text
+    assert say(b, p, "taxi via delta alpha hold short runway 28 left DLH4AB", at(ULLI_GND)) == []
+    hold = ulli.nodes[b.route.nodes[-1]]
+    out = m.tick(sim_at(hold.lat, hold.lon, ULLI_GND, groundspeed_kt=2, **wx()))
+    assert any("contact tower 118.1" in t.text for t in out) and b.phase == Phase.HOLDING
+
+    # --- Tower: takeoff, handoff to Departure
+    hs = sim_at(hold.lat, hold.lon, ULLI_TWR, **wx())
+    out = say(b, p, "Tower, DLH4AB holding short 28 left ready for departure", hs)
+    assert "runway 28L, cleared for takeoff" in out[0].text
+    assert say(b, p, "cleared for takeoff runway 28 left DLH4AB", hs) == []
+    out = ticks(m, air(59.80, 30.20, ULLI_TWR, 1800, vs_fpm=2000, **wx()))
+    assert any("contact departure 120.3" in t.text for t in out) and b.phase == Phase.DEPARTURE
+
+    # --- Departure: vectors towards Moscow (south-east), FL100
+    s = air(59.79, 30.18, ULLI_DEP, 2300, heading_true=280, heading_mag=269, **wx())  # variation ~11 E
+    out = say(b, p, "Departure, DLH4AB passing 2300 climbing 5000", s)
+    assert "radar contact" in out[0].text and "climb FL100" in out[0].text
+    assert b.assigned_hdg == 120  # true bearing ULLI -> UUEE ~134, minus 11 E variation, rounded to 10
+    assert say(b, p, f"heading {b.assigned_hdg}, climb flight level 100, DLH4AB", s) == []
+
+    # --- Center: handoff at 10000, FL350, direct UUEE
+    out = ticks(m, air(59.6, 30.5, ULLI_DEP, 10100, **wx()), 1)
+    assert any("contact center 127.9" in t.text for t in out) and b.phase == Phase.ENROUTE
+    out = say(b, p, "Center, DLH4AB passing flight level 105", air(59.6, 30.5, CTR, 10500, **wx()))
+    assert "climb FL350, proceed direct UUEE" in out[0].text and b.assigned_hdg is None
+    assert say(b, p, "climb flight level 350, direct UUEE, DLH4AB", air(59.6, 30.5, CTR, 10500, **wx())) == []
+
+    # --- descent on request (~200 km out); from here the field is Sheremetyevo
+    out = say(b, p, "Center, DLH4AB request descent", air(57.7, 36.0, CTR, 35000, **wx()))
+    assert "descend FL100" in out[0].text and b.phase == Phase.ARRIVAL and b.dest is uuee
+    assert say(b, p, "descend flight level 100, DLH4AB", air(57.7, 36.0, CTR, 35000, **wx())) == []
+
+    # --- Sheremetyevo Approach (own frequency, unlike KBTV): ILS 24L, 3000 ft
+    out = say(b, p, "Approach, DLH4AB descending flight level 100", air(56.3, 37.6, UUEE_APP, 10000, **wx()))
+    assert out[0].position == Position.APPROACH
+    assert "descend 3000 ft, cleared ILS approach runway 24L, contact tower 118.7 when established" in out[0].text
+    assert b.assigned_alt == 3000  # field 628 ft + 2500, rounded to 500
+    assert say(b, p, "descend 3000 feet cleared ILS runway 24 left DLH4AB", air(56.3, 37.6, UUEE_APP, 10000, **wx())) == []
+
+    # --- Tower: landing clearance on the same runway as the approach
+    out = say(b, p, "Tower, DLH4AB established ILS runway 24 left", air(56.02, 37.55, UUEE_TWR, 2500, **wx()))
+    assert "runway 24L, cleared to land" in out[0].text and b.phase == Phase.LANDING
+    assert say(b, p, "cleared to land runway 24 left DLH4AB", air(56.02, 37.55, UUEE_TWR, 2500, **wx())) == []
+
+    # --- touchdown on 24L, vacate -> Ground 123.6
+    td = uuee.runway_end("24L")
+    ticks(m, sim_at(td.lat - 0.001, td.lon - 0.003, UUEE_TWR, groundspeed_kt=130, **wx()))
+    assert b.phase == Phase.LANDING
+    out = ticks(m, sim_at(*UUEE_VACATE, UUEE_TWR, groundspeed_kt=15, **wx()), 1)
+    assert any("contact ground 123.6" in t.text for t in out) and b.phase == Phase.TAXI_IN
+    assert say(b, p, "ground 123.6, DLH4AB", sim_at(*UUEE_VACATE, UUEE_TWR, **wx())) == []
+
+    # --- taxi to a stand at Sheremetyevo, shutdown -> next flight departs from UUEE
+    out = say(b, p, "Ground, DLH4AB vacated runway 24 left, request taxi to stand", sim_at(*UUEE_VACATE, UUEE_GND, **wx()))
+    assert "taxi to stand" in out[0].text and b.route.ok
+    if b.pending:
+        assert say(b, p, f"hold short runway {b.pending.expected['hold_short']} DLH4AB",
+                   sim_at(*UUEE_VACATE, UUEE_GND, **wx())) == []
+    gate = next(g for g in uuee.gates if g.name == b.gate)
+    ticks(m, sim_at(gate.lat, gate.lon, UUEE_GND, parking_brake=1.0, engines_running=[0, 0], **wx()), 1)
+    assert b.phase == Phase.PARKED and b.dep is uuee
+
 def test_no_readback_reminder_while_pilot_talks(kbtv):
     """Live bug: 'how do you read' came in the middle of the pilot's readback (PTT + STT time)."""
     b = Brain(FlightConfig(callsign="DLH4AB", destination="KBOS"), kbtv)
@@ -388,59 +495,71 @@ def test_no_readback_reminder_while_pilot_talks(kbtv):
 # ------------------------------------------------- not implemented yet (xfail)
 # Not strict: other threads are building some of these; an XPASS means the marker can go.
 
-def _arrival_brain(kbtv, alt=10000):
-    b = Brain(FlightConfig(callsign="DLH4AB", destination="KBTV"), kbtv, index=KbtvIndex(kbtv))
-    b.phase, b.runway, b.squawk, b.assigned_alt = Phase.ARRIVAL, "15", "5304", alt
+def _arrival_brain(ulli, uuee, alt=10000):
+    """ULLI -> UUEE flight already handed to Center and cleared down to `alt`."""
+    b = Brain(FlightConfig(callsign="DLH4AB", destination="UUEE"), ulli, index=RouteIndex(uuee))
+    b.phase, b.runway, b.squawk, b.assigned_alt = Phase.ARRIVAL, "28L", "5304", alt
     b._load_dest()
     return b, Monitor(b)
 
 
-@pytest.mark.xfail(reason="Center never hands off to Approach; on the shared 121.1 Center answers")
-def test_center_hands_off_to_approach(kbtv):
-    b, m = _arrival_brain(kbtv)
-    p = IntentParser()
-    # ~25 NM north of KBTV, level 10000, descending into the terminal area
-    out = ticks(m, air(44.89, -73.15, CTR, 10000, vs_fpm=-1500))
-    assert any("contact approach 121.1" in t.text for t in out)
-    say(b, p, "approach 121.1, DLH4AB", air(44.89, -73.15, CTR, 10000))
-    out = say(b, p, "Burlington Approach, DLH4AB, descending FL100", air(44.88, -73.15, APP, 10000))
+@pytest.mark.xfail(reason="Center never hands off to Approach")
+def test_center_hands_off_to_approach(ulli, uuee):
+    b, m = _arrival_brain(ulli, uuee)
+    # ~30 NM north-west of UUEE, level 10000, descending into the terminal area
+    out = ticks(m, air(56.4, 37.0, CTR, 10000, vs_fpm=-1500, **wx()))
+    assert any("contact approach 126.6" in t.text for t in out)
+
+
+@pytest.mark.xfail(reason="on KBTV's shared approach/departure 121.1 the Approach call is answered by Center")
+def test_shared_approach_frequency_answers_as_approach(kbtv):
+    b = Brain(FlightConfig(callsign="DLH4AB", destination="KBTV"), kbtv, index=KbtvIndex(kbtv))
+    b.phase, b.runway, b.assigned_alt = Phase.ARRIVAL, "15", 10000
+    b._load_dest()
+    out = say(b, IntentParser(), "Burlington Approach, DLH4AB, descending FL100", air(44.88, -73.15, APP, 10000))
     assert out[0].position == Position.APPROACH
 
 
 @pytest.mark.xfail(reason="ATC-initiated descent at top of descent is not implemented (PLAN stage 2)")
-def test_center_starts_descent_at_tod(kbtv):
-    b, m = _arrival_brain(kbtv, alt=35000)
+def test_center_starts_descent_at_tod(ulli, uuee):
+    b, m = _arrival_brain(ulli, uuee, alt=35000)
     b.phase = Phase.ENROUTE
     b.alt_captured = True
-    # FL350, ~100 NM out: past the 3:1 top of descent (~105 NM) -> Center calls first
-    out = ticks(m, air(46.13, -73.15, CTR, 35000))
+    # FL350, ~100 NM north-west of UUEE: past the 3:1 top of descent (~105 NM) -> Center calls first
+    out = ticks(m, air(57.3, 36.0, CTR, 35000, **wx()))
     assert any("descend" in t.text for t in out) and b.assigned_alt < 35000
 
 
 @pytest.mark.xfail(reason="Approach clears ILS straight away, no vectors to final yet")
-def test_approach_vectors_to_ils(kbtv):
-    b, m = _arrival_brain(kbtv)
-    p = IntentParser()
-    out = say(b, p, "Burlington Approach, DLH4AB, FL100, request ILS approach",
-              air(44.89, -73.15, APP, 10000, heading_mag=180, heading_true=166))
+def test_approach_vectors_to_ils(ulli, uuee):
+    b, m = _arrival_brain(ulli, uuee)
+    out = say(b, IntentParser(), "Approach, DLH4AB, FL100, request ILS approach",
+              air(56.3, 37.6, UUEE_APP, 10000, heading_mag=180, heading_true=191, **wx()))
     assert "heading" in out[0].text and "cleared ILS" not in out[0].text
     assert b.assigned_hdg is not None
 
 
 @pytest.mark.xfail(reason="'runway vacated' without 'request taxi' is not understood ('say again')")
-def test_ground_understands_runway_vacated(kbtv):
-    b, m = _arrival_brain(kbtv)
+def test_ground_understands_runway_vacated(ulli, uuee):
+    b, m = _arrival_brain(ulli, uuee)
     b.phase = Phase.TAXI_IN
-    out = say(b, IntentParser(), "Burlington Ground, Lufthansa four alpha bravo, runway vacated",
-              sim_at(*VACATE, GND))
+    out = say(b, IntentParser(), "Sheremetyevo Ground, Lufthansa four alpha bravo, runway 24 left vacated",
+              sim_at(*UUEE_VACATE, UUEE_GND, **wx()))
     assert "taxi to stand" in out[0].text
 
 
+@pytest.mark.xfail(reason="station names come from the apt.dat city ('St. Petersburg', 'Moscow'), "
+                          "not from the frequency names ('PULKOVO DEL')")
+def test_station_names_ulli_uuee(ulli, uuee):
+    b = Brain(FlightConfig(callsign="DLH4AB"), ulli)
+    assert b.station_name(Position.DELIVERY) == "Pulkovo Delivery"
+
+
 @pytest.mark.xfail(reason="callsign, type and stand are not taken from the first call yet (VATSIM style)")
-def test_vatsim_first_call_sets_callsign_and_stand(kbtv):
-    b = Brain(FlightConfig(), kbtv)  # config callsign N123AB is only a fallback
-    p = IntentParser()
-    out = say(b, p, "Burlington Delivery, good day, A320 Lufthansa four alpha bravo on stand 1, "
-                    "request IFR clearance to KBOS", sim_at(44.47, -73.15, DL))
+def test_vatsim_first_call_sets_callsign_and_stand(ulli):
+    b = Brain(FlightConfig(), ulli)  # config callsign N123AB is only a fallback
+    stand = next(g for g in ulli.gates if g.name == "101A")
+    out = say(b, IntentParser(), "Pulkovo Delivery, good day, A320 Lufthansa four alpha bravo on stand 101A, "
+                                 "request IFR clearance to UUEE", sim_at(stand.lat, stand.lon, ULLI_DL, **wx()))
     assert out[0].text.startswith("DLH4AB")
-    assert getattr(b, "stand", None) == "1"  # departure stand; b.gate is the arrival stand
+    assert getattr(b, "stand", None) == "101A"  # departure stand; b.gate is the arrival stand
