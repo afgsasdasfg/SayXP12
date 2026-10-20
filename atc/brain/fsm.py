@@ -27,6 +27,8 @@ log = logging.getLogger("brain")
 VHF = (118000, 137000)
 ROUTE_POINT_PASSED_NM = 3.0   # this close to a route point: "direct" goes to the next one
 STAR_END_NM = 5.0             # this close to the last fix of the STAR: vectors to final
+DESCENT_FT = 10000            # first descent clearance from cruise
+TOD_NM_PER_1000FT = 3.0       # top of descent: 3 NM per 1000 ft to lose
 STAR_MIN_FT = 6000            # below this the arrival goes straight to vectors, no STAR
 
 PHASE_POSITION = {
@@ -623,19 +625,8 @@ class Brain:
         if it.intent == "request_direct" and self.phase in (Phase.ENROUTE, Phase.ARRIVAL):
             return self._direct(C, it)
         if it.intent == "request_descent" and self.phase in (Phase.ENROUTE, Phase.ARRIVAL):
-            self._set_phase(Phase.ARRIVAL)
-            self._load_dest()
             want = it.data.get("altitude") or (it.data.get("flight_level") or 0) * 100
-            alt = int(want) if want else 10000
-            self._assign_alt(alt)
-            t, sp = self.phr.climb(alt, "descend")
-            if self.star is None and self._assign_star():
-                self._assign_heading(None)   # the STAR ends any radar vectors
-                st, ss = self.phr.star_clearance(self.star, self._appr_name(), self.arr_runway)
-                t, sp = f"{t}, {st}", f"{sp}, {ss}"
-            tx = self._tx(C, (t, sp), True)
-            self._expect(tx, {"altitude": alt}, set())
-            return [tx]
+            return self._descend(int(want) if want else DESCENT_FT)
         if it.intent == "request_approach" and self.phase == Phase.ENROUTE:
             self._set_phase(Phase.ARRIVAL)
         if it.intent in ("request_approach", "check_in", "report_position") and self.phase == Phase.ARRIVAL:
@@ -643,6 +634,54 @@ class Brain:
         if self.phase == Phase.APPROACH and self.vector_pos == C:
             return self._on_vectors(it)
         return None
+
+    def _descend(self, alt: int) -> list[Transmission]:
+        """Center: 'descend FL100[, cleared BUKU3E arrival, expect ILS approach runway 24L]'."""
+        C = Position.CENTER
+        self._set_phase(Phase.ARRIVAL)
+        self._load_dest()
+        self._assign_alt(alt)
+        t, sp = self.phr.climb(alt, "descend")
+        if self.star is None and self._assign_star():
+            self._assign_heading(None)   # the STAR ends any radar vectors
+            st, ss = self.phr.star_clearance(self.star, self._appr_name(), self.arr_runway)
+            t, sp = f"{t}, {st}", f"{sp}, {ss}"
+        tx = self._tx(C, (t, sp), True)
+        self._expect(tx, {"altitude": alt}, set())
+        return [tx]
+
+    def descent_tick(self) -> list[Transmission]:
+        """Monitor: Center starts the descent at the top of descent, 3 NM per 1000 ft to the field,
+        or (with a planned STAR) to its entry point at DESCENT_FT, whichever comes first."""
+        s = self.sim
+        if self.phase != Phase.ENROUTE or self.pending is not None or not self.tracker.airborne:
+            return []
+        if s.altitude_ft < DESCENT_FT + 2000 or s.vs_fpm > 500:
+            return []   # low already, or still climbing
+        if self.position_on(s.tx_khz) != Position.CENTER:
+            return []
+        if self.dest is not None:
+            dest, elev = (self.dest.lat, self.dest.lon), self.dest.elevation_ft
+        elif self.index and self.fc.destination and self.fc.destination in self.index.entries:
+            _, _, lat, lon = self.index.entries[self.fc.destination][:4]
+            if lat is None:
+                return []
+            dest, elev = (lat, lon), 0
+        else:
+            return []
+        nm = distance_m(s.lat, s.lon, *dest) / 1852
+        tod = nm <= TOD_NM_PER_1000FT * (s.altitude_ft - elev) / 1000
+        if not tod and self.fc.star and self.fc.route_points:
+            entry = self.fc.route_points[-1]   # the plan's points end at the STAR entry
+            tod = distance_m(s.lat, s.lon, entry.lat, entry.lon) / 1852 <= \
+                TOD_NM_PER_1000FT * (s.altitude_ft - DESCENT_FT) / 1000
+        if not tod:
+            return []
+        log.info("top of descent: %.0f NM to %s at %.0f ft", nm, self.fc.destination, s.altitude_ft)
+        out = self._descend(DESCENT_FT)
+        for tx in out:
+            tx.proactive = True
+        return out
 
     def _direct(self, pos: Position, it: PilotIntent) -> list[Transmission]:
         """'request direct VUZPU': approved when the point is in the nav data (ends radar vectors)."""

@@ -47,7 +47,7 @@ class Monitor:
         b.update(s)
         out: list[Transmission] = []
         for rule in (self._no_readback, self._handoff_departure, self._handoff_center,
-                     self._further_climb,
+                     self._further_climb, self._top_of_descent,
                      self._handoff_approach, self._star_vectors, self._approach_vectors,
                      self._hold_short_handoff, self._runway_incursion, self._route_deviation,
                      self._taxi_speed, self._heading_deviation,
@@ -140,6 +140,9 @@ class Monitor:
         for tx in out:
             tx.proactive = True
         return out
+
+    def _top_of_descent(self, s: SimState) -> list[Transmission]:
+        return self.b.descent_tick()
 
     def _star_vectors(self, s: SimState) -> list[Transmission]:
         return self.b.star_tick()

@@ -344,12 +344,10 @@ def test_full_flight_radio_check_to_stand(kbtv):
     out = say(b, p, "Center, DLH4AB passing flight level 105", air(44.3, -72.9, CTR, 10500))
     assert "climb FL350" in out[0].text and "proceed direct KBTV" in out[0].text and b.assigned_hdg is None
     assert say(b, p, "climb flight level 350, direct KBTV, DLH4AB", air(44.3, -72.9, CTR, 10500)) == []
-    ticks(m, air(44.0, -72.5, CTR, 35000))
-    assert b.alt_captured
-
-    # --- descent (pilot request; ATC-initiated TOD is an xfail below)
-    out = say(b, p, "Center, DLH4AB request descent", air(44.2, -72.8, CTR, 35000))
-    assert "descend FL100" in out[0].text and b.phase == Phase.ARRIVAL and b.dest is kbtv
+    # --- level at FL350 ~35 NM from KBTV: already past the top of descent, Center calls first
+    out = ticks(m, air(44.0, -72.5, CTR, 35000))
+    assert [t.text for t in out] == ["DLH4AB, descend FL100"] and out[0].proactive
+    assert b.phase == Phase.ARRIVAL and b.dest is kbtv
     assert say(b, p, "descend flight level 100, DLH4AB", air(44.2, -72.8, CTR, 35000)) == []
 
     # --- Approach: vectors to the ILS (no CIFP here: FAF 2500 = field 333 ft + 2000, rounded to 500)
@@ -541,7 +539,6 @@ def test_shared_approach_frequency_answers_as_approach(kbtv):
     assert out[0].position == Position.APPROACH
 
 
-@pytest.mark.xfail(reason="ATC-initiated descent at top of descent is not implemented (PLAN stage 2)")
 def test_center_starts_descent_at_tod(ulli, uuee):
     b, m = _arrival_brain(ulli, uuee, alt=35000)
     b.phase = Phase.ENROUTE

@@ -26,7 +26,8 @@ templates decide *how* it is said. The LLM never invents frequencies, taxiways, 
 | PTT (keyboard + joystick via X-Plane), faster-whisper STT, Piper TTS with radio effect, voice per position | ✅ |
 | Intent parser: Gemini / Ollama / rule-based fallback | ✅ |
 | Planned route (SimBrief): vectors end "proceed direct <next route point>"; STAR from CIFP with the descent, vectors to the ILS from its last fix | ✅ (not flown live yet) |
-| TOD, ATIS, traffic (TCAS), VFR, overlay window | ⏳ stage 2–3 |
+| Top of descent: Center calls "descend FL100" by itself, 3 NM per 1000 ft to the field (or FL100 at the planned STAR entry) | ✅ (not flown live yet) |
+| ATIS, traffic (TCAS), VFR, overlay window | ⏳ stage 2–3 |
 
 ## Install (Windows)
 

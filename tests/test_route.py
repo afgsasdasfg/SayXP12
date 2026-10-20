@@ -160,3 +160,17 @@ def test_without_a_plan_no_star(ulli, uuee, xp_root):
     b._set_phase(Phase.ENROUTE)
     out = say(b, IntentParser(), "Center, DLH4AB request descent", air(57.3, 35.0, CTR, 35000, **wx()))
     assert out[0].text == "DLH4AB, descend FL100" and b.star is None
+
+
+def test_top_of_descent_with_the_star(ulli, uuee, xp_root):
+    """FL350, ~122 NM from UUEE but 65 NM from the STAR entry BUKUB: FL100 by BUKUB needs 75 NM."""
+    b = planned_brain(ulli, uuee, xp_root)
+    m = Monitor(b)
+    b._set_phase(Phase.ENROUTE)
+    b.assigned_alt = 35000
+    assert ticks(m, air(57.6, 35.2, CTR, 34000, vs_fpm=1500, **wx())) == []   # still climbing
+    assert ticks(m, air(57.6, 35.2, ULLI_DEP, 35000, **wx())) == []           # not on the Center frequency
+    out = ticks(m, air(57.6, 35.2, CTR, 35000, **wx()))
+    assert len(out) == 1 and out[0].proactive
+    assert out[0].text == "AFL51, descend FL100, cleared BUKU3E arrival, expect ILS approach runway 24L"
+    assert b.phase == Phase.ARRIVAL and b.assigned_alt == 10000
