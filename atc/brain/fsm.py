@@ -17,13 +17,17 @@ from ..phraseology import Phraseology, freq_text, wind
 from ..state import Phase, PilotIntent, Position, SimState, Transmission
 from ..world import navdata, taxi
 from ..world.aptdat import Airport, AptIndex, distance_m
-from ..world.cifp import cifp_file, final_for_runway, parse_cifp, parse_finals, sids_for_runway
+from ..world.cifp import (cifp_file, final_for_runway, parse_cifp, parse_finals, sids_for_runway,
+                          star_entries, star_path, stars_for_runway)
 from ..world.runways import select_runway
 from . import vectors
 
 log = logging.getLogger("brain")
 
 VHF = (118000, 137000)
+ROUTE_POINT_PASSED_NM = 3.0   # this close to a route point: "direct" goes to the next one
+STAR_END_NM = 5.0             # this close to the last fix of the STAR: vectors to final
+STAR_MIN_FT = 6000            # below this the arrival goes straight to vectors, no STAR
 
 PHASE_POSITION = {
     Phase.PARKED: Position.DELIVERY,
@@ -61,6 +65,8 @@ class FlightConfig:
     arrival_gate: str | None = None
     acf_type: str | None = None         # from the flight plan
     filed_destination: str | None = None  # flight plan loaded (SimBrief): "flight planned route"
+    route_points: list = field(default_factory=list)  # simbrief.RoutePoint: SID exit .. STAR entry
+    star: str | None = None             # planned STAR (SimBrief)
 
 
 @dataclass
@@ -119,6 +125,10 @@ class Brain:
         self.appr_cleared = False
         self.established = False
         self.approach_handoff = False   # Center already sent us to Approach
+        # STAR from the CIFP: flown to its last fix, then vectors to final
+        self.star: str | None = None
+        self.star_fixes: list[str] = []
+        self._star_end: tuple[float, float] | None = None
         self._rng = random.Random(fc.callsign)
 
     # ------------------------------------------------------------------ helpers
@@ -218,6 +228,9 @@ class Brain:
         who = self.phr.cs_spoken if self.identified else "Aeroflot, Rossiya, Lufthansa, Speedbird"
         if not self.identified and self.fc.filed_destination:  # callsign from the flight plan
             who = f"{self.phr.cs_spoken}, {who}"
+        if self.star:   # "Buku three Echo arrival"
+            from ..phraseology import procedure
+            who = f"{who}, {procedure(self.star)} arrival"
         return (f"{stations}, good day, A320 {who}, radio check. {ap.icao} {ap.name}. Runway "
                 + ", ".join(e.name for r in ap.runways for e in r.ends)
                 + f". Taxi via {twys_spoken}, hold short. Squawk, QNH, flight level, cleared, readback, "
@@ -601,7 +614,8 @@ class Brain:
             t, s = self.phr.climb(alt, verb)
             if self.assigned_hdg is not None:  # end of radar vectors
                 self._assign_heading(None)
-                nav_t, nav_s = self.phr.end_vectors(self.fc.destination)
+                nxt = self.next_route_point()
+                nav_t, nav_s = self.phr.end_vectors(nxt.ident if nxt else self.fc.destination)
                 t, s = f"{t}, {nav_t}", f"{s}, {nav_s}"
             tx = self._tx(C, (t, s), True)
             self._expect(tx, {"altitude": alt}, set())
@@ -614,13 +628,18 @@ class Brain:
             want = it.data.get("altitude") or (it.data.get("flight_level") or 0) * 100
             alt = int(want) if want else 10000
             self._assign_alt(alt)
-            tx = self._tx(C, self.phr.climb(alt, "descend"), True)
+            t, sp = self.phr.climb(alt, "descend")
+            if self.star is None and self._assign_star():
+                self._assign_heading(None)   # the STAR ends any radar vectors
+                st, ss = self.phr.star_clearance(self.star, self._appr_name(), self.arr_runway)
+                t, sp = f"{t}, {st}", f"{sp}, {ss}"
+            tx = self._tx(C, (t, sp), True)
             self._expect(tx, {"altitude": alt}, set())
             return [tx]
         if it.intent == "request_approach" and self.phase == Phase.ENROUTE:
             self._set_phase(Phase.ARRIVAL)
         if it.intent in ("request_approach", "check_in", "report_position") and self.phase == Phase.ARRIVAL:
-            return self.handoff_approach() or self._start_vectors(C)
+            return self.handoff_approach() or self._arrival(C)
         if self.phase == Phase.APPROACH and self.vector_pos == C:
             return self._on_vectors(it)
         return None
@@ -642,10 +661,113 @@ class Brain:
         if self.phase in (Phase.ARRIVAL, Phase.ENROUTE) and it.intent in (
                 "check_in", "request_approach", "report_position", "request_descent"):
             self._set_phase(Phase.ARRIVAL)
-            return self._start_vectors(A)
+            return self._arrival(A)
         if self.phase == Phase.APPROACH:
             return self._on_vectors(it)
         return self._on_departure(it) if self.phase in (Phase.TAKEOFF, Phase.DEPARTURE) else None
+
+    # ------------------------------------------------------- route and STAR
+    def next_route_point(self):
+        """Next point of the planned route ahead of us (SimBrief), None without a plan or past its end."""
+        pts = self.fc.route_points
+        if not pts:
+            return None
+        s = self.sim
+        d = [distance_m(s.lat, s.lon, p.lat, p.lon) for p in pts]
+        i = min(range(len(pts)), key=d.__getitem__)
+        if d[i] < ROUTE_POINT_PASSED_NM * 1852 or (
+                i + 1 < len(pts) and distance_m(pts[i].lat, pts[i].lon, pts[i + 1].lat, pts[i + 1].lon) > d[i + 1]):
+            i += 1   # at it, or already between it and the next one
+        return pts[i] if i < len(pts) else None
+
+    def _assign_star(self) -> bool:
+        """STAR for the arrival runway from the destination's CIFP: the planned one if it serves the
+        runway, else one joined at a point of the route (same entry as the planned one first)."""
+        self._load_dest()
+        ap = self.dest
+        f = cifp_file(self.xp_root, ap.icao) if self.xp_root and ap else None
+        if not f:
+            return False
+        self.arr_runway = self.arr_runway or self._select_arr_runway()
+        self.final = self.final or self._build_final()   # approach kind for "expect ILS approach"
+        cands = sorted(stars_for_runway(parse_cifp(f), self.arr_runway), key=lambda p: p.ident)
+        route = [p.ident for p in self.fc.route_points]
+        planned = next((p for p in cands if p.ident == self.fc.star), None)
+        entry = None
+        if planned is None:
+            plan_entries = next((star_entries(p) for p in cands if p.ident[:-1] == (self.fc.star or "")[:-1]), [])
+
+            def score(p):
+                ents = star_entries(p)
+                return (not any(e in plan_entries for e in ents), not any(e in route for e in ents))
+            joined = [p for p in cands if any(e in route for e in star_entries(p)) or
+                      any(e in plan_entries for e in star_entries(p))]
+            planned = min(joined, key=score, default=None)
+        if planned is None:
+            log.info("no STAR for runway %s joined from the route %s", self.arr_runway, route)
+            return False
+        entry = next((e for e in star_entries(planned) if e in route), None)
+        self.star = planned.ident
+        self.star_fixes = star_path(planned, self.arr_runway, entry)
+        self._star_end = None
+        log.info("STAR %s runway %s: %s", self.star, self.arr_runway, " ".join(self.star_fixes))
+        return bool(self.star_fixes)
+
+    def star_end(self) -> tuple[float, float] | None:
+        """Last fix of the STAR: from the flight plan, else the X-Plane nav data near the destination."""
+        if self._star_end is None and self.star_fixes:
+            last = self.star_fixes[-1]
+            p = next((p for p in self.fc.route_points if p.ident == last), None)
+            ap = self.dest or self.field
+            self._star_end = (p.lat, p.lon) if p else navdata.point_near(self.xp_root, last, ap.lat, ap.lon)
+        return self._star_end
+
+    def star_done(self) -> bool:
+        """Near the last fix of the STAR (or closer to the field than it is): time for vectors.
+        A STAR whose last fix is not in the nav data cannot be followed: vectors right away."""
+        end = self.star_end()
+        if end is None:
+            return True
+        s, ap = self.sim, self.dest or self.field
+        to_end = distance_m(s.lat, s.lon, *end)
+        return to_end < STAR_END_NM * 1852 or \
+            distance_m(s.lat, s.lon, ap.lat, ap.lon) < distance_m(*end, ap.lat, ap.lon) - 2 * 1852
+
+    def _appr_name(self) -> tuple[str, str]:
+        return self.phr.approach_name(self.appr_kind, self.appr_variant)
+
+    def _arrival(self, pos: Position) -> list[Transmission]:
+        """First call to the arrival controller: on the STAR "continue", otherwise vectors."""
+        fresh = False
+        if self.star is None and self.fc.route_points and self.sim.altitude_ft > STAR_MIN_FT:
+            fresh = self._assign_star()   # nobody asked for descent: the STAR comes now
+        if self.star is None or self.star_done():
+            return self._start_vectors(pos)
+        if fresh:
+            self._assign_heading(None)
+        f = self.final or self._build_final()
+        alt = -(-(f.faf_alt + 2000) // 1000) * 1000 if f else None   # FAF + 2000, up to the next 1000
+        if alt and self.sim.altitude_ft < alt + 200:
+            alt = None
+        if alt:
+            self._assign_alt(alt)
+        tx = self._tx(pos, self.phr.continue_star(self.star, self._appr_name(), self.arr_runway, alt, fresh), True)
+        self._expect(tx, {"altitude": alt} if alt else {}, set())
+        return [tx]
+
+    def star_tick(self) -> list[Transmission]:
+        """Monitor: on the STAR with the arrival controller, vectors start at its last fix."""
+        if self.phase != Phase.ARRIVAL or self.star is None or self.pending is not None:
+            return []
+        pos = Position.APPROACH if self.approach_handoff else Position.CENTER
+        if not self.tracker.airborne or self.last_pilot_pos != pos or self.position_on(self.sim.tx_khz) != pos:
+            return []   # not checked in yet: the check-in starts the vectors
+        if not self.star_done():
+            return []
+        out = self._start_vectors(pos)
+        for tx in out:
+            tx.proactive = True
+        return out
 
     # ----------------------------------------------------- vectors to final
     def handoff_approach(self) -> list[Transmission]:
@@ -807,7 +929,9 @@ class Brain:
         """Magnetic heading towards the destination, else runway heading; rounded to 10°."""
         from ..world.aptdat import bearing_deg
         true = None
-        if self.index and self.fc.destination and self.fc.destination in self.index.entries:
+        if nxt := self.next_route_point():
+            true = bearing_deg(self.sim.lat, self.sim.lon, nxt.lat, nxt.lon)
+        elif self.index and self.fc.destination and self.fc.destination in self.index.entries:
             _, _, lat, lon = self.index.entries[self.fc.destination][:4]
             if lat is not None:
                 true = bearing_deg(self.sim.lat, self.sim.lon, lat, lon)
@@ -966,7 +1090,7 @@ class Brain:
             self.hdg_captured = True
 
     # ------------------------------------------------------------ persistence
-    STATE_FIELDS = ("runway", "arr_runway", "sid", "squawk", "assigned_alt", "assigned_hdg",
+    STATE_FIELDS = ("runway", "arr_runway", "sid", "star", "star_fixes", "squawk", "assigned_alt", "assigned_hdg",
                     "cleared_takeoff", "cleared_land", "gate", "identified", "called_type", "stand")
 
     def snapshot(self) -> dict:
@@ -1015,6 +1139,8 @@ class Brain:
         self.identified, self.stand, self.dest_choices = False, None, []  # next flight: new first call
         self.final = self.vector = None
         self.appr_cleared = self.established = self.approach_handoff = False
+        self.star, self.star_fixes, self._star_end = None, [], None
+        self.fc.route_points, self.fc.star = [], None
         self._set_phase(Phase.PARKED)
 
     def hold_point(self) -> tuple[float, float] | None:

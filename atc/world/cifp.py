@@ -1,7 +1,7 @@
 """Minimal CIFP reader (ARINC-424-like CSV in Resources/default data/CIFP/<ICAO>.dat).
 
 Row: <TYPE>:<seq>,<route type>,<proc ident>,<transition>,<fix>,...
-Stage 1 only needs: which SIDs serve a runway, and their first fixes / top altitude.
+SIDs and STARs: which serve a runway, and their fixes; approaches: the final segment.
 Custom Data/CIFP overrides default data when present.
 """
 from __future__ import annotations
@@ -52,6 +52,41 @@ def sids_for_runway(procs: dict[str, dict[str, Procedure]], runway_end: str) -> 
                                        for t in p.transitions):
             res.append(p)
     return res
+
+
+def _serves(p: Procedure, runway_end: str) -> bool | None:
+    """True/False from the runway transitions (RW24C, RW24B = both 24s); None: it has none."""
+    rws = [t for t in p.transitions if t.startswith("RW")]
+    if not rws:
+        return None
+    return f"RW{runway_end}" in rws or any(t.endswith("B") and t[2:4] == runway_end[:2] for t in rws)
+
+
+def stars_for_runway(procs: dict[str, dict[str, Procedure]], runway_end: str) -> list[Procedure]:
+    """STARs with a transition to this runway; STARs without runway transitions serve every runway
+    (UUEE: BUKU3E/BUKU3F all end at KEZVU, the runway is not in the data)."""
+    return [p for p in procs.get("STAR", {}).values() if _serves(p, runway_end) is not False]
+
+
+def star_entries(p: Procedure) -> list[str]:
+    """Where a STAR can be joined: its enroute transitions, else the first fix of the common route."""
+    ent = [t for t in p.transitions if t != "ALL" and not t.startswith("RW")]
+    if not ent and p.transitions.get("ALL"):
+        ent = [p.transitions["ALL"][0]]
+    return ent
+
+
+def star_path(p: Procedure, runway_end: str, entry: str | None = None) -> list[str]:
+    """Fixes flown: enroute transition (by entry fix) + common route + runway transition."""
+    out: list[str] = []
+    rw = f"RW{runway_end}"
+    rw_t = rw if rw in p.transitions else next(
+        (t for t in p.transitions if t.startswith("RW") and t.endswith("B") and t[2:4] == runway_end[:2]), None)
+    for t in (entry if entry in p.transitions and entry != "ALL" else None, "ALL", rw_t):
+        for fix in p.transitions.get(t, []) if t else []:
+            if not out or out[-1] != fix:
+                out.append(fix)
+    return out
 
 
 # ------------------------------------------------------------------ approaches

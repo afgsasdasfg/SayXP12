@@ -304,6 +304,23 @@ class Phraseology:
         return self._out(f"unable direct {fix}, point unknown, say again",
                          f"unable direct {letters(fix)}, point unknown, say again")
 
+    @staticmethod
+    def star_clearance(star: str, appr: tuple[str, str], runway_end: str) -> tuple[str, str]:
+        """'cleared BUKU3E arrival, expect ILS approach runway 24L' (no callsign: joined to a descent)."""
+        return (f"cleared {star} arrival, expect {appr[0]} approach runway {runway_end}",
+                f"cleared {procedure(star)} arrival, expect {appr[1]} approach runway {runway(runway_end)}")
+
+    def continue_star(self, star: str, appr: tuple[str, str], runway_end: str,
+                      alt_ft: int | None = None, fresh: bool = False) -> tuple[str, str]:
+        """Arrival check-in on the STAR: 'continue BUKU3E arrival, descend 4000 ft, expect ILS ...'."""
+        verb = "cleared" if fresh else "continue"
+        t, s = f"{verb} {star} arrival", f"{verb} {procedure(star)} arrival"
+        if alt_ft:
+            at, asp = self.alt(alt_ft)
+            t, s = f"{t}, descend {at}", f"{s}, descend {asp}"
+        return self._out(f"{t}, expect {appr[0]} approach runway {runway_end}",
+                         f"{s}, expect {appr[1]} approach runway {runway(runway_end)}")
+
     def end_vectors(self, dest: str | None) -> tuple[str, str]:
         if dest:
             return f"proceed direct {dest}", f"proceed direct {letters(dest)}"

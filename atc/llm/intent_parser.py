@@ -407,7 +407,7 @@ def classify_rules(text: str) -> str:
         return "unable"  # "negative, Aeroflot 51" without a request
     slots = extract_slots(text)
     if any(k in slots for k in ("squawk", "hold_short", "cleared_takeoff", "cleared_land", "line_up",
-                                "frequency")) or re.search(r"\b(cleared to|climb|descend|taxi via)\b", t):
+                                "frequency")) or re.search(r"\b(cleared to|climb|descend|taxi via|arrival)\b", t):
         return "readback"
     if ("heading" in slots or "fix" in slots) and not re.search(r"\b(with you|checking in)\b", t):
         return "readback"  # "right heading 330, DLH4AB" (vectors to final)

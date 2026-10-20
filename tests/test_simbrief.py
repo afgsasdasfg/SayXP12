@@ -1,6 +1,6 @@
 """SimBrief OFP -> flight plan -> "flight planned route" clearance.
 
-The OFP fixture follows the shape of SimBrief's xml.fetcher JSON; the route and SID are made up.
+The OFP fixture follows the shape of SimBrief's xml.fetcher JSON; the route, SID, STAR fixes and their coordinates are made up (STAR name from the UUEE CIFP).
 """
 import json
 
@@ -20,7 +20,7 @@ def test_parse_ofp():
     assert (fp.origin, fp.destination, fp.callsign, fp.acf_type, fp.cruise_ft) == \
         ("ULLI", "UUEE", "AFL51", "A20N", 35000)
     assert (fp.sid, fp.sid_exit) == ("SUMAN1A", "SUMAN")
-    assert fp.summary() == "AFL51 A20N ULLI-UUEE FL350 SUMAN1A SUMAN R805 BITSA DCT UUEE"
+    assert fp.summary() == "AFL51 A20N ULLI-UUEE FL350 SUMAN1A SUMAN R805 BITSA DCT BUKUB BUKU3E"
     # no navlog: the route string gives the SID and its exit fix
     fp = parse_ofp({**OFP, "navlog": {}})
     assert (fp.sid, fp.sid_exit) == ("SUMAN1A", "SUMAN")
