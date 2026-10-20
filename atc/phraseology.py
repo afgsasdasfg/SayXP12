@@ -305,14 +305,52 @@ class Phraseology:
         at, asp = self.alt(alt_ft)
         return self._out(f"{verb} {at}", f"{verb} {asp}")
 
-    def cleared_approach(self, appr: str, runway_end: str, alt_ft: int, tower_khz: int | None) -> tuple[str, str]:
-        at, asp = self.alt(alt_ft)
-        t = f"descend {at}, cleared {appr} approach runway {runway_end}"
-        s = f"descend {asp}, cleared {appr} approach runway {runway(runway_end)}"
-        if tower_khz:
-            t += f", contact tower {freq_text(tower_khz)} when established"
-            s += f", contact tower {freq(tower_khz)} when established"
+    @staticmethod
+    def approach_name(kind: str, variant: str = "") -> tuple[str, str]:
+        """('ILS', '') -> 'ILS'; ('RNAV', 'Y') -> 'RNAV Y' / 'RNAV Yankee'."""
+        spoken = {"ILS": "I L S", "RNAV": "R NAV"}.get(kind, kind)
+        if variant:
+            return f"{kind} {variant}", f"{spoken} {NATO.get(variant, variant)}"
+        return kind, spoken
+
+    def vectors_for_approach(self, appr: tuple[str, str], runway_end: str, hdg: int, turn: str | None,
+                             alt_ft: int | None, verb: str = "descend") -> tuple[str, str]:
+        """Approach check-in: 'expect vectors ILS approach runway 15, turn left heading 330, descend 3000 ft'."""
+        ht, hs = self.heading_instr(hdg, turn)
+        t = f"expect vectors {appr[0]} approach runway {runway_end}, {ht}"
+        s = f"expect vectors {appr[1]} approach runway {runway(runway_end)}, {hs}"
+        if alt_ft:
+            at, asp = self.alt(alt_ft)
+            t, s = f"{t}, {verb} {at}", f"{s}, {verb} {asp}"
         return self._out(t, s)
+
+    def vector(self, hdg: int, turn: str | None, alt_ft: int | None = None,
+               verb: str = "descend", leg: str | None = None) -> tuple[str, str]:
+        """'turn right heading 240 for base, descend 2000 ft'."""
+        ht, hs = self.heading_instr(hdg, turn)
+        if leg:
+            ht, hs = f"{ht} for {leg}", f"{hs} for {leg}"
+        if alt_ft:
+            at, asp = self.alt(alt_ft)
+            ht, hs = f"{ht}, {verb} {at}", f"{hs}, {verb} {asp}"
+        return self._out(ht, hs)
+
+    def intercept_clearance(self, appr: tuple[str, str], kind: str, runway_end: str, hdg: int | None,
+                            turn: str | None, alt_ft: int, verb: str = "maintain") -> tuple[str, str]:
+        """'turn left heading 180, maintain 2000 ft until established on the localizer,
+        cleared ILS approach runway 15'."""
+        at, asp = self.alt(alt_ft)
+        course = "the localizer" if kind in ("ILS", "localizer") else "the final approach course"
+        parts_t, parts_s = [], []
+        if hdg is not None:
+            ht, hs = self.heading_instr(hdg, turn)
+            parts_t.append(ht)
+            parts_s.append(hs)
+        parts_t.append(f"{verb} {at} until established on {course}")
+        parts_s.append(f"{verb} {asp} until established on {course}")
+        parts_t.append(f"cleared {appr[0]} approach runway {runway_end}")
+        parts_s.append(f"cleared {appr[1]} approach runway {runway(runway_end)}")
+        return self._out(", ".join(parts_t), ", ".join(parts_s))
 
     # generic ---------------------------------------------------------------
     def radio_check(self, station: str) -> tuple[str, str]:
