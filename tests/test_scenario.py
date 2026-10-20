@@ -670,3 +670,59 @@ def test_callsign_from_radio_check_on_any_frequency(ulli):
               sim_at(stand.lat, stand.lon, 127900, **wx()))
     assert out[0].text.startswith("AFL51, ") and b.fc.callsign == "AFL51"
     assert "Aeroflot five one" in b.stt_prompt()
+
+
+def _climbing_out(ulli):
+    """ULLI departure under radar vectors, cleared FL100, on Departure's frequency."""
+    b = Brain(FlightConfig(callsign="DLH4AB"), ulli)
+    m = Monitor(b)
+    p = IntentParser()
+    b.runway, b.phase = "28L", Phase.TAKEOFF
+    ticks(m, air(59.80, 30.20, ULLI_TWR, 1800, vs_fpm=2000, **wx()))
+    b.pending = None
+    s = air(59.79, 30.18, ULLI_DEP, 2300, heading_true=280, heading_mag=269, **wx())
+    out = say(b, p, "Departure, DLH4AB passing 2300 climbing 5000", s)
+    assert "climb FL100" in out[0].text
+    assert say(b, p, f"heading {b.assigned_hdg}, climb flight level 100, DLH4AB", s) == []
+    return b, m, p
+
+
+def test_center_handoff_before_levelling_at_fl100(ulli):
+    """Live ULLI-UUEE: cleared FL100, levelled at 9990, the handoff at >= 10000 never came."""
+    b, m, p = _climbing_out(ulli)
+    out = ticks(m, air(59.7, 30.3, ULLI_DEP, 8000, vs_fpm=2000, **wx()))
+    assert out == [] and b.phase == Phase.DEPARTURE
+    out = ticks(m, air(59.7, 30.3, ULLI_DEP, 8700, vs_fpm=2000, **wx()), 1)
+    assert any("contact center 127.9" in t.text for t in out) and b.phase == Phase.ENROUTE
+    assert say(b, p, "127.9, DLH4AB", air(59.7, 30.3, ULLI_DEP, 8800, **wx())) == []
+    out = say(b, p, "Center, DLH4AB passing 9000 climbing flight level 100", air(59.6, 30.5, CTR, 9000, **wx()))
+    assert "climb FL350" in out[0].text and b.assigned_alt == 35000
+
+
+def test_departure_request_higher_gives_more_than_fl100(ulli):
+    b, m, p = _climbing_out(ulli)
+    b.fc.handoff_center_ft = 12000   # Center further up, the pilot asks Departure
+    out = say(b, p, "Departure, DLH4AB request higher", air(59.7, 30.3, ULLI_DEP, 9000, **wx()))
+    assert "FL100" not in out[0].text and b.assigned_alt == 12000
+
+
+def test_center_climbs_a_silent_pilot_levelled_below_cruise(ulli):
+    """Switched to Center without a word, sitting at FL100: Center calls with the climb."""
+    b, m, p = _climbing_out(ulli)
+    out = ticks(m, air(59.7, 30.3, ULLI_DEP, 8700, vs_fpm=2000, **wx()), 1)
+    assert any("contact center" in t.text for t in out)
+    b.pending = None   # handoff read back, then silence on the new frequency
+    assert ticks(m, air(59.6, 30.5, CTR, 9600, vs_fpm=500, **wx())) == []  # still expected to check in
+    out = ticks(m, air(59.6, 30.5, CTR, 10000, **wx()))
+    assert len(out) == 1 and "identified, climb FL350" in out[0].text and out[0].proactive
+    assert say(b, p, "climb flight level 350, DLH4AB", air(59.6, 30.5, CTR, 10000, **wx())) == []
+    assert ticks(m, air(59.6, 30.5, CTR, 34000, **wx())) == []
+
+
+def test_departure_gives_further_climb_before_level_off(ulli):
+    """Cleared 5000 on the first call to Departure, the next level comes before 5000."""
+    b, m, p = _climbing_out(ulli)
+    b._assign_alt(5000)
+    b.pending = None
+    out = ticks(m, air(59.7, 30.3, ULLI_DEP, 3700, vs_fpm=2000, **wx()))
+    assert len(out) == 1 and out[0].position == Position.DEPARTURE and "climb FL100" in out[0].text

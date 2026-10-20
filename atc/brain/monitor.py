@@ -24,6 +24,9 @@ ROUTE_JOIN_M = 25.0
 ROUTE_LOST_M = 60.0
 ALT_DEV_FT = 300.0
 APPROACH_HANDOFF_NM = 40.0
+HANDOFF_LEAD_FT = 1500.0    # Departure hands over to Center this far below the handoff altitude
+CLIMB_LEAD_FT = 1500.0      # further climb is given this far below the cleared level, before level-off
+LEVEL_FT = 300.0
 
 
 class Monitor:
@@ -44,6 +47,7 @@ class Monitor:
         b.update(s)
         out: list[Transmission] = []
         for rule in (self._no_readback, self._handoff_departure, self._handoff_center,
+                     self._further_climb,
                      self._handoff_approach, self._approach_vectors,
                      self._hold_short_handoff, self._runway_incursion, self._route_deviation,
                      self._taxi_speed, self._heading_deviation,
@@ -84,7 +88,11 @@ class Monitor:
 
     def _handoff_center(self, s: SimState) -> list[Transmission]:
         b = self.b
-        if b.phase != Phase.DEPARTURE or s.altitude_ft < b.fc.handoff_center_ft:
+        # before the cleared level, not at it: levelled at 9990 under FL100 it never fired
+        top = b.fc.handoff_center_ft
+        if b.assigned_alt and b.assigned_alt >= top:
+            top = min(top, b.assigned_alt - HANDOFF_LEAD_FT)
+        if b.phase != Phase.DEPARTURE or not b.tracker.airborne or s.altitude_ft < top:
             return []
         b._set_phase(Phase.ENROUTE)
         ctr = b.freq_of(Position.CENTER)
@@ -92,6 +100,32 @@ class Monitor:
             return []
         tx = b._tx(Position.DEPARTURE, b.phr.contact("center", ctr), True)
         b._expect(tx, {"frequency": ctr}, set())
+        return [tx]
+
+    def _further_climb(self, s: SimState) -> list[Transmission]:
+        """Climbing towards a level below cruise: the next climb comes before the level-off,
+        as a real controller gives it, not after minutes level at FL100."""
+        b = self.b
+        if b.phase not in (Phase.DEPARTURE, Phase.ENROUTE) or b.pending is not None or not b.tracker.airborne:
+            return []
+        if not b.assigned_alt or s.altitude_ft < b.assigned_alt - CLIMB_LEAD_FT:
+            return []
+        if b.phase == Phase.DEPARTURE and b.assigned_alt >= b.fc.handoff_center_ft:
+            return []  # top of Departure's airspace: the Center handoff gives the climb
+        alt = b.next_climb_alt()
+        exp = b.expected_position()
+        if alt is None or b.position_on(s.tx_khz) != exp:
+            return []  # nothing higher, or the pilot is not on our frequency
+        level = abs(s.altitude_ft - b.assigned_alt) < LEVEL_FT
+        if b.last_pilot_pos != exp and not level:
+            return []  # not checked in yet: the check-in call will get the climb
+        if not self._ready("further_climb", 20.0):
+            return []
+        verb = "climb" if b.last_pilot_pos == exp else "identified, climb"
+        b._assign_alt(alt)
+        tx = b._tx(exp, b.phr.climb(alt, verb), True)
+        tx.proactive = True
+        b._expect(tx, {"altitude": alt}, set())
         return [tx]
 
     def _handoff_approach(self, s: SimState) -> list[Transmission]:
