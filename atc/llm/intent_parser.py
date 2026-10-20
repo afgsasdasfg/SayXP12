@@ -11,6 +11,7 @@ import json
 import logging
 import re
 
+from ..phraseology import AIRLINES
 from ..state import PilotIntent
 from .base import LLM, LLMError
 
@@ -127,6 +128,154 @@ def _destination(t: str) -> str | None:
     return None
 
 
+_NAME_STOP = {"information", "info", "via", "with", "flight", "level", "squawk", "runway", "stand",
+              "gate", "on", "at", "request", "requesting", "and", "delivery", "ground", "good", "day",
+              "please", "cruise", "cruising", "ready", "to", "for", "clearance", "ifr", "the"}
+
+
+def _destination_name(t: str) -> str | None:
+    """'clearance to New York, ...' -> 'NEW YORK' (up to 3 words; the brain matches a city)."""
+    for k in _DEST_KEY.finditer(t):
+        if k.group() == "cleared":  # "cleared for takeoff"; a city is said in the request
+            continue
+        words = t[k.end():].split()
+        for i, w in enumerate(words[:3]):
+            if w not in ("to", "for"):
+                continue
+            name = []
+            for w2 in words[i + 1:i + 4]:
+                if w2 in _NAME_STOP or w2 in _TELEPHONY or not w2.isalpha():
+                    break
+                name.append(w2)
+            if name:
+                return " ".join(name).upper()
+    return None
+
+
+# ------------------------------------------------- who is calling (VATSIM first call)
+# "Burlington Delivery, good day, A320 Lufthansa 4AB on stand 1, information A, request IFR
+# clearance to Boston": callsign, aircraft type and stand.
+
+_TELEPHONY = {v.lower().replace(" ", ""): k for k, v in AIRLINES.items()}
+
+
+def _flight_id(words: list[str]) -> tuple[str, int]:
+    """'4 alpha bravo' / '4ab' -> ('4AB', words used); must start with a digit."""
+    out, n = "", 0
+    for w in words:
+        if re.fullmatch(r"\d+[a-z]{0,2}", w) and (not out or out[-1].isdigit()):
+            out += w.upper()
+        elif out and (letter := NATO_WORDS.get(w) or (w.upper() if re.fullmatch(r"[a-z]", w) else None)):
+            out += letter
+        else:
+            break
+        n += 1
+        if len(out) >= 6:
+            break
+    return (out, n) if out[:1].isdigit() and len(out) <= 6 else ("", 0)
+
+
+def _callsign(t: str) -> tuple[str, int, int] | None:
+    """(callsign, first word, end word) in the normalised transmission."""
+    words = t.split()
+    for i, w in enumerate(words):
+        if m := re.fullmatch(r"([a-z]{3})(\d{1,4}[a-z]{0,2})", w):  # "dlh4ab"
+            if m.group(1).upper() in AIRLINES:
+                return w.upper(), i, i + 1
+        for n in (2, 1):  # "air france 123", "lufthansa 4 alpha bravo"
+            tel = "".join(words[i:i + n])
+            if len(words[i:i + n]) == n and tel in _TELEPHONY:
+                fid, used = _flight_id(words[i + n:i + n + 4])
+                if fid:
+                    return _TELEPHONY[tel] + fid, i, i + n + used
+    for i, w in enumerate(words):  # registrations: "n123ab", "november 123 alpha bravo"
+        if re.fullmatch(r"n\d{1,5}[a-z]{0,2}", w):
+            return w.upper(), i, i + 1
+        if w in NATO_WORDS:
+            reg, j = "", i
+            while j < len(words) and len(reg) < 6:
+                wj = words[j]
+                if wj in NATO_WORDS:
+                    reg += NATO_WORDS[wj]
+                elif re.fullmatch(r"\d+", wj) and reg:
+                    reg += wj
+                else:
+                    break
+                j += 1
+            if len(reg) >= 5 and (reg[0] == "N" or not any(c.isdigit() for c in reg)):
+                return reg, i, j
+    return None
+
+
+_TYPE_TOKEN = re.compile(r"[a-z]{1,3}\d[a-z0-9]{0,2}")
+
+
+def _acf_type(words: list[str]) -> str | None:
+    for i, w in enumerate(words):
+        nxt = words[i + 1] if i + 1 < len(words) else ""
+        if w in ("airbus", "boeing", "embraer") and re.fullmatch(r"\d{3}", nxt):
+            return {"airbus": "A", "boeing": "B", "embraer": "E"}[w] + nxt
+        if w in NATO_WORDS and re.fullmatch(r"\d{3}", nxt) and NATO_WORDS[w] in "ABE":
+            return NATO_WORDS[w] + nxt  # "alpha 320"
+        if 3 <= len(w) <= 4 and _TYPE_TOKEN.fullmatch(w) and not w.isdigit():
+            return w.upper()
+    return None
+
+
+_STAND = re.compile(r"\b(?:stand|gate|parking(?: position)?|ramp|spot)(?: number)? (.+)")
+
+
+def _stand(t: str) -> tuple[str, int] | None:
+    """('A12', start char) from 'on stand alpha 12' / 'gate a12' / 'stand 1'."""
+    m = _STAND.search(t)
+    if not m:
+        return None
+    sid = ""
+    for w in m.group(1).split()[:3]:
+        if w in NATO_WORDS and not sid:
+            sid = NATO_WORDS[w]
+        elif re.fullmatch(r"[a-z]?\d{1,3}[a-z]?", w) and not any(c.isdigit() for c in sid):
+            sid += w.upper()
+        elif w in NATO_WORDS and sid[-1:].isdigit():
+            sid += NATO_WORDS[w]
+            break
+        else:
+            break
+    return (sid, m.start()) if any(c.isdigit() for c in sid) else None
+
+
+def extract_identity(text: str) -> dict:
+    """callsign / acf_type / stand stated in a call (VATSIM-style first contact)."""
+    t = normalize(text)
+    out: dict = {}
+    st = _stand(t)
+    if st:
+        out["stand"] = st[0]
+        t = t[:st[1]]  # "stand a12" is not an aircraft type
+    words = t.split()
+    cs = _callsign(t)
+    if cs:
+        out["callsign"], a, b = cs
+        near = words[max(0, a - 3):a] + words[b:b + 3]  # type is said next to the callsign
+        typ = _acf_type(near)
+    else:
+        typ = _acf_type(words)
+    if typ:
+        out["acf_type"] = typ
+    return out
+
+
+def spoken_codes(text: str) -> list[str]:
+    """Every 4-letter code in a call: 'UUEE', 'uniform uniform echo echo'."""
+    words = normalize(text).split()
+    out = [w.upper() for w in words if re.fullmatch(r"[a-z]{4}", w)
+           and w.upper() not in _NOT_ICAO and w not in NATO_WORDS]
+    for i in range(len(words) - 3):
+        if code := nato_spelling(words[i:i + 4]):
+            out.insert(0, code)
+    return out
+
+
 def extract_slots(text: str) -> dict:
     """Regex slot extraction from a normalised transmission."""
     t = normalize(text)
@@ -158,7 +307,10 @@ def extract_slots(text: str) -> dict:
         s["cleared_land"] = True
     if "line up" in t or "lining up" in t or "position and hold" in t:
         s["line_up"] = True
-    dest = _destination(t)
+    dest, name = _destination(t), _destination_name(t)
+    # "to New York" is a city, not the code NEW; "kilo bravo oscar sierra" stays KBOS
+    if name and (dest is None or (" " in name and not nato_spelling(name.lower().split()))):
+        dest = name
     if dest:
         s["destination"] = dest
     if m := re.search(r"(?:information|info) ([a-z]+)\b", t):
@@ -260,8 +412,10 @@ class IntentParser:
         data = {k: slots[k] for k in ("destination", "gate") if k in slots}
         if intent in ("request_climb", "request_descent"):
             data.update({k: slots[k] for k in ("altitude", "flight_level") if k in slots})
-        return PilotIntent(intent=intent, readback=slots, unclear=intent == "other",
-                           raw_text=text, data=data)
+        ident = extract_identity(text)
+        data.update({k: ident[k] for k in ("acf_type", "stand") if k in ident})
+        return PilotIntent(intent=intent, callsign=ident.get("callsign"), readback=slots,
+                           unclear=intent == "other", raw_text=text, data=data)
 
     async def parse(self, text: str, context: dict) -> PilotIntent:
         text = text.strip()
@@ -297,5 +451,11 @@ class IntentParser:
             rb.setdefault(k, v)
         rb = {k: v for k, v in rb.items() if v is not None}
         data = {k: v for k, v in data.items() if v is not None}
-        return PilotIntent(intent=intent, callsign=obj.get("callsign"), readback=rb,
+        ident = extract_identity(text)
+        if not ident.get("callsign") and obj.get("callsign"):  # "Lufthansa 4AB" -> DLH4AB
+            ident.update({k: v for k, v in extract_identity(str(obj["callsign"])).items() if k == "callsign"})
+        for k in ("acf_type", "stand"):
+            if k in ident:
+                data.setdefault(k, ident[k])
+        return PilotIntent(intent=intent, callsign=ident.get("callsign"), readback=rb,
                            unclear=bool(obj.get("unclear")), raw_text=text, data=data)

@@ -88,7 +88,11 @@ Without a microphone / speakers:
 .venv\Scripts\python -m atc.main --text --no-tts
 ```
 
-Typical departure: Delivery "request IFR clearance to KBOS" → read back → Ground "request
+Typical departure: first call to Delivery as on VATSIM, "Burlington Delivery, good day, A320
+Lufthansa 4AB on stand 1, information A, request IFR clearance to Boston". The callsign, type and
+stand come from this call (the config callsign is only the fallback). The destination may be an
+ICAO code or a city: with one airport in the city that is enough, with several Delivery asks for
+the ICAO. Then read back → Ground "request
 taxi" → read back the hold short → at the holding point Ground hands you to Tower → "ready for
 departure" → after takeoff Tower hands you to Departure → check in.
 

@@ -2,7 +2,8 @@ import asyncio
 
 from atc import phraseology as ph
 from atc.llm.base import LLM, LLMError, parse_json_loose
-from atc.llm.intent_parser import IntentParser, classify_rules, extract_slots, normalize
+from atc.llm.intent_parser import (IntentParser, classify_rules, extract_identity, extract_slots, normalize,
+                                   spoken_codes)
 
 
 def test_spoken_formats():
@@ -113,3 +114,31 @@ def test_hybrid_mode_only_calls_llm_when_rules_fail():
 
 def test_parse_json_loose():
     assert parse_json_loose('```json\n{"a": 1}\n```') == {"a": 1}
+
+
+def test_first_call_identity():
+    """VATSIM first call: '[type] [callsign] on stand [stand]'."""
+    cases = {
+        "Burlington Delivery, good day, A320 Lufthansa 4AB on stand 1, information alpha, "
+        "request IFR clearance to Boston": ("DLH4AB", "A320", "1"),
+        "delivery good day airbus 320 lufthansa four alpha bravo on stand alpha one two":
+            ("DLH4AB", "A320", "A12"),
+        "Delivery, good day, DLH4AB, A20N, stand 1": ("DLH4AB", "A20N", "1"),
+        "Delivery, good day, Boeing 738 Speedbird one two on gate 3": ("BAW12", "B738", "3"),
+        "delivery good day C172 november one two three alpha bravo at parking 5": ("N123AB", "C172", "5"),
+    }
+    for said, (cs, typ, stand) in cases.items():
+        assert extract_identity(said) == {"callsign": cs, "acf_type": typ, "stand": stand}, said
+    assert extract_identity("cleared KBOS runway 15 squawk 4521 DLH4AB") == {"callsign": "DLH4AB"}
+    assert extract_identity("taxi via G M hold short runway 15") == {}
+    it = IntentParser().parse_rules("Delivery, good day, A320 Lufthansa 4AB on stand 1, request clearance to KBOS")
+    assert it.callsign == "DLH4AB" and it.data["acf_type"] == "A320" and it.data["stand"] == "1"
+
+
+def test_destination_city():
+    assert extract_slots("request IFR clearance to Boston, Lufthansa 4AB")["destination"] == "BOSTON"
+    assert extract_slots("request clearance to New York information alpha")["destination"] == "NEW YORK"
+    assert extract_slots("request clearance for kilo bravo oscar sierra")["destination"] == "KBOS"
+    assert extract_slots("request ifr to kbos")["destination"] == "KBOS"
+    assert spoken_codes("kilo juliett foxtrot kilo") == ["KJFK"]
+    assert spoken_codes("destination KLGA, Lufthansa 4AB") == ["KLGA"]

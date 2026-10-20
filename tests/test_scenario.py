@@ -201,6 +201,9 @@ def test_radar_vectors_after_departure(kbtv):
     class FakeIndex:
         entries = {"KBOS": ("x", 0, 42.3656, -71.0096), "KBTV": ("x", 0, 44.47, -73.15)}
 
+        def in_city(self, name):
+            return []
+
     b = Brain(FlightConfig(callsign="DLH4AB", destination="KBOS"), kbtv, index=FakeIndex())
     m = Monitor(b)
     p = IntentParser()
@@ -232,6 +235,9 @@ def test_unknown_destination_is_rejected(kbtv):
     class FakeIndex:
         entries = {"KBOS": (), "KBTV": ()}
 
+        def in_city(self, name):
+            return []
+
     b = Brain(FlightConfig(callsign="DLH4AB"), kbtv, index=FakeIndex())
     p = IntentParser()
     s = sim_at(44.47, -73.15, 119150)
@@ -262,6 +268,9 @@ class KbtvIndex:
     def __init__(self, ap):
         self.ap = ap
         self.entries = {"KBTV": ("x", 0, 44.471955, -73.153277)}
+
+    def in_city(self, name):
+        return []
 
     def load(self, icao):
         if icao != "KBTV":
@@ -386,6 +395,9 @@ class RouteIndex:
     def __init__(self, uuee):
         self.uuee = uuee
         self.entries = {"ULLI": ("x", 0, 59.800277778, 30.2625), "UUEE": ("x", 0, 55.970167, 37.407833)}
+
+    def in_city(self, name):
+        return []
 
     def load(self, icao):
         if icao != "UUEE":
@@ -555,11 +567,87 @@ def test_station_names_ulli_uuee(ulli, uuee):
     assert b.station_name(Position.DELIVERY) == "Pulkovo Delivery"
 
 
-@pytest.mark.xfail(reason="callsign, type and stand are not taken from the first call yet (VATSIM style)")
 def test_vatsim_first_call_sets_callsign_and_stand(ulli):
     b = Brain(FlightConfig(), ulli)  # config callsign N123AB is only a fallback
     stand = next(g for g in ulli.gates if g.name == "101A")
     out = say(b, IntentParser(), "Pulkovo Delivery, good day, A320 Lufthansa four alpha bravo on stand 101A, "
                                  "request IFR clearance to UUEE", sim_at(stand.lat, stand.lon, ULLI_DL, **wx()))
     assert out[0].text.startswith("DLH4AB")
-    assert getattr(b, "stand", None) == "101A"  # departure stand; b.gate is the arrival stand
+    assert b.stand == "101A" and b.called_type == "A320"  # departure stand; b.gate is the arrival stand
+
+
+def test_vatsim_first_call_sets_callsign_type_stand(kbtv, city_index):
+    """'good day, [type] [callsign] on stand [stand]': the call wins over the config callsign."""
+    b = Brain(FlightConfig(callsign="N123AB"), kbtv, index=city_index)
+    p = IntentParser()
+    s = sim_at(44.47, -73.15, 119150, acf_icao="")
+    out = say(b, p, "Burlington Delivery, good day, A320 Lufthansa 4AB on stand 1, information alpha, "
+                    "request IFR clearance to Boston", s)
+    assert out[0].text.startswith("DLH4AB, cleared to KBOS")
+    assert out[0].spoken.startswith("Lufthansa four Alpha Bravo")
+    assert b.fc.callsign == "DLH4AB" and b.called_type == "A320" and b.acf_type == "A320"
+    assert b.stand == "1"
+    # later calls do not change the callsign
+    say(b, p, "say again, Speedbird 12", s)
+    assert b.fc.callsign == "DLH4AB"
+    # survives a restart
+    b2 = Brain(FlightConfig(callsign="N123AB"), kbtv, index=city_index)
+    b2.restore(b.snapshot())
+    assert b2.phr.cs == "DLH4AB" and b2.stand == "1"
+
+
+def test_config_callsign_is_the_fallback(kbtv):
+    b = Brain(FlightConfig(callsign="DLH4AB", destination="KBOS"), kbtv)
+    out = say(b, IntentParser(), "Burlington delivery, good day, request IFR clearance", sim_at(44.47, -73.15, 119150))
+    assert out[0].text.startswith("DLH4AB, cleared to KBOS")
+
+
+def test_city_with_several_airports_asks_for_icao(kbtv, city_index):
+    b = Brain(FlightConfig(callsign="N123AB"), kbtv, index=city_index)
+    p = IntentParser()
+    s = sim_at(44.47, -73.15, 119150)
+    out = say(b, p, "Burlington Delivery, good day, A320 Lufthansa 4AB on stand 1, "
+                    "request IFR clearance to New York", s)
+    assert out[0].text == "DLH4AB, several airports in New York, say destination ICAO"
+    assert b.squawk is None
+    out = say(b, p, "kilo juliett foxtrot kilo, Lufthansa 4AB", s)
+    assert out[0].text.startswith("DLH4AB, cleared to KJFK") and b.fc.destination == "KJFK"
+
+
+def test_unknown_city_is_rejected(kbtv, city_index):
+    b = Brain(FlightConfig(callsign="N123AB"), kbtv, index=city_index)
+    out = say(b, IntentParser(), "Delivery, good day, A320 Lufthansa 4AB on stand 1, request clearance to Atlantis",
+              sim_at(44.47, -73.15, 119150))
+    assert out[0].text == "DLH4AB, unable to find ATLANTIS, say again destination"
+    assert "Atlantis" in out[0].spoken
+
+
+def test_ulli_first_call_to_moscow_asks_icao(ulli, city_index):
+    """Test flight ULLI -> UUEE: Moscow has several airports, so Delivery asks for the ICAO."""
+    b = Brain(FlightConfig(), ulli, index=city_index)
+    p = IntentParser()
+    stand = next(g for g in ulli.gates if g.name == "101A")
+    s = sim_at(stand.lat, stand.lon, ULLI_DL, **wx(acf_icao="A20N"))
+    out = say(b, p, "Pulkovo Delivery, good day, A20N Aeroflot 1 2 3 4 on stand 101A, information alpha, "
+                    "request IFR clearance to Moscow", s)
+    assert out[0].text == "AFL1234, several airports in Moscow, say destination ICAO"
+    assert out[0].spoken.startswith("Aeroflot one two three four")
+    assert b.fc.callsign == "AFL1234" and b.called_type == "A20N" and b.stand == "101A"
+    out = say(b, p, "uniform uniform echo echo, Aeroflot 1234", s)
+    assert out[0].text.startswith("AFL1234, cleared to UUEE") and b.fc.destination == "UUEE"
+
+
+def test_ulli_icao_and_unique_city(ulli, uuee, city_index):
+    p = IntentParser()
+    stand = next(g for g in ulli.gates if g.name == "101A")
+    s = sim_at(stand.lat, stand.lon, ULLI_DL, **wx())
+    b = Brain(FlightConfig(), ulli, index=city_index)
+    out = say(b, p, "Pulkovo Delivery, good day, A20N DLH4AB on stand 101A, request IFR clearance to UUEE", s)
+    assert out[0].text.startswith("DLH4AB, cleared to UUEE")
+    # the way back: St. Petersburg has one airport, whichever way it is spelled
+    gate = next(g for g in uuee.gates if g.kind == "gate")
+    s = sim_at(gate.lat, gate.lon, uuee.freq("delivery").khz, **wx())
+    for said in ("Saint Petersburg", "St. Petersburg"):
+        b = Brain(FlightConfig(), uuee, index=city_index)
+        out = say(b, p, f"Delivery, good day, A20N DLH4AB on stand {gate.name}, request IFR clearance to {said}", s)
+        assert out[0].text.startswith("DLH4AB, cleared to ULLI"), said
