@@ -72,7 +72,11 @@ automatically (a few seconds per phrase). To enable the GPU:
 
 ## Run
 
-Edit `config.toml` (callsign, destination, cruise altitude, PTT key), then:
+Edit `config.toml` (callsign, destination, cruise altitude, PTT key). To fly the plan from SimBrief, put
+your Pilot ID (simbrief.com → Account Settings) in `[simbrief] pilot_id`: at start the latest OFP
+gives the destination, cruise level, callsign and first fix, and Delivery clears you via the
+"flight planned route" (FAA: "then as filed"). Check it with `python -m atc.world.simbrief <pilot_id>`.
+Then:
 
 ```bash
 .venv\Scripts\python -m atc.main

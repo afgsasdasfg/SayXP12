@@ -155,6 +155,26 @@ class App:
         except OSError as e:
             log.warning("could not save state: %s", e)
 
+    def _flight_config(self, dep_icao: str) -> FlightConfig:
+        """config.toml [flight], then the latest SimBrief OFP if [simbrief] has a Pilot ID or username."""
+        fc = flight_config(self.cfg)
+        sb = self.cfg.get("simbrief", {})
+        if not (sb.get("pilot_id") or sb.get("username")):
+            return fc
+        from .world import simbrief
+        try:
+            fp = simbrief.fetch(str(sb.get("pilot_id", "")).strip(), str(sb.get("username", "")).strip())
+        except Exception as e:  # network, bad id: fly with the config values
+            log.warning("SimBrief: %s", e)
+            print(f"SimBrief plan not loaded: {e}")
+            return fc
+        if fp.origin != dep_icao:
+            print(f"SimBrief plan {fp.origin}-{fp.destination} is not from {dep_icao}, not used")
+            return fc
+        simbrief.apply_plan(fc, fp)
+        print(f"SimBrief plan: {fp.summary()}")
+        return fc
+
     @staticmethod
     def _saved_departure() -> str | None:
         try:
@@ -245,7 +265,7 @@ class App:
             print("No airport near the aircraft; set [flight] departure in config.toml")
             return
         airport = index.load(icao)
-        self.brain = Brain(flight_config(self.cfg), airport, index, self.xp_root)
+        self.brain = Brain(self._flight_config(airport.icao), airport, index, self.xp_root)
         self.monitor = Monitor(self.brain)
         self.brain.update(s)
         b = self.brain

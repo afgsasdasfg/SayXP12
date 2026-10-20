@@ -152,10 +152,13 @@ class Phraseology:
 
     # delivery --------------------------------------------------------------
     def ifr_clearance(self, dest: str, runway_end: str, sid: str | None, init_alt: int,
-                      squawk: str, dep_khz: int | None) -> tuple[str, str]:
+                      squawk: str, dep_khz: int | None, filed: bool = False) -> tuple[str, str]:
         at, asp = self.alt(init_alt)
         route_t = f"{sid} departure" if sid else "radar vectors"
         route_s = f"{procedure(sid)} departure" if sid else "radar vectors"
+        if filed:  # route from the pilot's flight plan (SimBrief)
+            then = "then as filed" if self.region == "FAA" else "flight planned route"
+            route_t, route_s = f"{route_t}, {then}", f"{route_s}, {then}"
         t = (f"cleared to {dest} via {route_t}, runway {runway_end}, "
              f"climb {at}, squawk {squawk}")
         s = (f"cleared to {letters(dest)} via {route_s}, runway {runway(runway_end)}, "
@@ -166,12 +169,13 @@ class Phraseology:
         return self._out(t, s)
 
     def readback_correct(self, next_pos: str | None = None, next_khz: int | None = None,
-                         purpose: str = "") -> tuple[str, str]:
-        t, s = "readback correct", "readback correct"
+                         purpose: str = "", confirm: bool = True) -> tuple[str, str]:
+        """'readback correct[, contact ground 121.7 for push and start]'; confirm=False: only the handoff."""
+        parts_t, parts_s = (["readback correct"], ["readback correct"]) if confirm else ([], [])
         if next_pos and next_khz:
-            t += f", contact {next_pos} {freq_text(next_khz)}{(' ' + purpose) if purpose else ''}"
-            s += f", contact {next_pos} {freq(next_khz)}{(' ' + purpose) if purpose else ''}"
-        return self._out(t, s)
+            parts_t.append(f"contact {next_pos} {freq_text(next_khz)}{(' ' + purpose) if purpose else ''}")
+            parts_s.append(f"contact {next_pos} {freq(next_khz)}{(' ' + purpose) if purpose else ''}")
+        return self._out(", ".join(parts_t), ", ".join(parts_s))
 
     def readback_wrong(self, items: list[tuple[str, str, str]]) -> tuple[str, str]:
         """items: (label, text value, spoken value) that were wrong/missing."""

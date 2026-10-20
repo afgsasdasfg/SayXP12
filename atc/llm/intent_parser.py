@@ -33,6 +33,7 @@ INTENTS = [
     "report_position",
     "say_again",            # pilot asks ATC to repeat
     "radio_check",          # "radio check, how do you read"
+    "request_qnh",          # "request QNH" / "say altimeter"
     "acknowledge",          # roger / wilco without readback
     "unable",
     "other",
@@ -378,11 +379,15 @@ def classify_rules(text: str) -> str:
         return "radio_check"
     if re.search(r"\b(clearance|cleared to [a-z]{4}|ifr to|request ifr)\b", t) and "request" in t:
         return "request_clearance"
+    if re.search(r"\b(?:request(?:ing)?|say|confirm) (?:the )?(?:qnh|q n h|altimeter|pressure)\b", t):
+        return "request_qnh"
     if re.search(r"\bapprov", t) and "request" not in t:
         return "acknowledge"  # "push and start approved, DLH4AB" (Whisper: "approve")
-    if re.search(r"\bpush ?back\b|\brequest(?:ing)? push\b|\bpush (?:and )?start\b", t):
+    if re.search(r"\bpush\b.*\bfacing (?:north|east|south|west)", t) and "request" not in t:
+        return "acknowledge"  # "push and start the proof facing south": only ATC says the direction
+    if re.search(r"\bpush ?back\b|\brequest(?:ing)? push\b|\bpush (?:and )?(?:start|sort)\b", t):
         return "request_pushback"
-    if re.search(r"\b(request(?:ing)? start|ready (?:to|for) start)", t):
+    if re.search(r"\b((?:request(?:ing)?|rest) start|ready (?:to|for) start)", t):  # Whisper: "rest start"
         return "request_startup"
     if re.search(r"\b(request(?:ing)? taxi|ready (?:to|for) taxi|taxi to (?:the )?(?:gate|stand|parking)|request taxi)\b", t):
         return "request_taxi"
@@ -398,8 +403,8 @@ def classify_rules(text: str) -> str:
         return "request_descent"
     if re.search(r"\brequest(?:ing)? (?:higher|climb)\b", t):
         return "request_climb"
-    if re.search(r"\bunable\b", t):
-        return "unable"
+    if re.search(r"\bunable\b", t) or re.fullmatch(r"(?:\w+ )?negative(?: \w+){0,2}", t.strip()):
+        return "unable"  # "negative, Aeroflot 51" without a request
     slots = extract_slots(text)
     if any(k in slots for k in ("squawk", "hold_short", "cleared_takeoff", "cleared_land", "line_up",
                                 "frequency")) or re.search(r"\b(cleared to|climb|descend|taxi via)\b", t):

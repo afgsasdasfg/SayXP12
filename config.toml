@@ -17,6 +17,12 @@ sid = ""                     # force a SID; empty = pick by first_fix from CIFP 
 first_fix = ""               # first enroute fix, used to choose the SID
 arrival_gate = ""
 
+[simbrief]
+# Latest SimBrief OFP: destination, cruise level, route, callsign -> "flight planned route" clearance.
+# Pilot ID: simbrief.com -> Account Settings. Empty = no SimBrief, [flight] values are used.
+pilot_id = ""
+username = ""                # instead of pilot_id
+
 [atc]
 region = "ICAO"              # ICAO | FAA phraseology
 transition_alt = 5000
