@@ -14,7 +14,7 @@ from typing import Callable
 from ..phase_tracker import PhaseTracker, on_runway
 from ..phraseology import Phraseology, freq_text, wind
 from ..state import Phase, PilotIntent, Position, SimState, Transmission
-from ..world import taxi
+from ..world import navdata, taxi
 from ..world.aptdat import Airport, AptIndex, distance_m
 from ..world.cifp import cifp_file, final_for_runway, parse_cifp, parse_finals, sids_for_runway
 from ..world.runways import select_runway
@@ -100,6 +100,7 @@ class Brain:
         self.pending: Pending | None = None
         self.last_tx: Transmission | None = None
         self.last_pilot_t = 0.0
+        self.last_pilot_pos: Position | None = None   # station the pilot last talked to
         self.sim = SimState()
         self.gate: str | None = None
         # VATSIM first call "good day, A320 Lufthansa 4AB on stand 1": who is calling
@@ -272,6 +273,9 @@ class Brain:
         if slot == "heading":
             from ..phraseology import heading as hdg_s
             return "heading", f"{int(val):03d}", hdg_s(int(val))
+        if slot == "fix":
+            from ..phraseology import letters
+            return "direct", str(val), letters(str(val))
         if slot == "cleared_takeoff":
             return "cleared for takeoff", "", ""
         if slot == "cleared_land":
@@ -287,6 +291,7 @@ class Brain:
                  pos.value if pos else "nobody", intent.raw_text, intent.intent, intent.readback)
         if pos is None:
             return []
+        self.last_pilot_pos = pos
         self._identify(intent)
         if pos == Position.DELIVERY and self.dest_choices and (code := self._chosen_destination(intent)):
             intent = PilotIntent("request_clearance", callsign=intent.callsign, raw_text=intent.raw_text,
@@ -543,10 +548,11 @@ class Brain:
 
     def _on_departure(self, it: PilotIntent):
         D = Position.DEPARTURE
+        if it.intent == "request_direct" and self.phase == Phase.DEPARTURE:
+            return self._direct(D, it)
         if self.phase in (Phase.TAKEOFF, Phase.DEPARTURE) and it.intent in ("check_in", "report_position", "request_climb"):
             self._set_phase(Phase.DEPARTURE)
-            new_alt = min(self.fc.cruise_ft, max(self.assigned_alt or 0, 10000)) \
-                if self.fc.cruise_ft > (self.assigned_alt or 0) else self.assigned_alt
+            new_alt = self.next_climb_alt() or self.assigned_alt
             self._assign_alt(new_alt)
             expected: dict = {"altitude": new_alt}
             hdg, turn = (None, None)
@@ -576,6 +582,8 @@ class Brain:
             tx = self._tx(C, (t, s), True)
             self._expect(tx, {"altitude": alt}, set())
             return [tx]
+        if it.intent == "request_direct" and self.phase in (Phase.ENROUTE, Phase.ARRIVAL):
+            return self._direct(C, it)
         if it.intent == "request_descent" and self.phase in (Phase.ENROUTE, Phase.ARRIVAL):
             self._set_phase(Phase.ARRIVAL)
             self._load_dest()
@@ -592,6 +600,18 @@ class Brain:
         if self.phase == Phase.APPROACH and self.vector_pos == C:
             return self._on_vectors(it)
         return None
+
+    def _direct(self, pos: Position, it: PilotIntent) -> list[Transmission]:
+        """'request direct VUZPU': approved when the point is in the nav data (ends radar vectors)."""
+        fix = it.data.get("fix") or it.readback.get("fix")
+        if not fix:
+            return [self._tx(pos, self.phr.say_again())]
+        if navdata.point_known(self.xp_root, fix) is False:
+            return [self._tx(pos, self.phr.unknown_point(fix))]
+        self._assign_heading(None)
+        tx = self._tx(pos, self.phr.direct(fix), True)
+        self._expect(tx, {"fix": fix}, set())
+        return [tx]
 
     def _on_approach(self, it: PilotIntent):
         A = Position.APPROACH
@@ -737,6 +757,15 @@ class Brain:
         return [tx]
 
     # ------------------------------------------------------------ decisions
+    def next_climb_alt(self) -> int | None:
+        """Next level on the climb: Departure takes us to the top of its airspace
+        (handoff_center_ft), Center to cruise. None = nothing higher to give."""
+        cur = self.assigned_alt or 0
+        top = self.fc.handoff_center_ft
+        alt = min(self.fc.cruise_ft, top) if self.phase in (Phase.TAKEOFF, Phase.DEPARTURE) and cur < top \
+            else self.fc.cruise_ft
+        return alt if alt > cur else None
+
     def _assign_alt(self, alt: int) -> None:
         self.assigned_alt = alt
         self.alt_captured = False
@@ -954,6 +983,7 @@ class Brain:
         self._new_route(None)
         self.cleared_takeoff = self.cleared_land = False
         self.pending = None
+        self.last_pilot_pos = None
         self.identified, self.stand, self.dest_choices = False, None, []  # next flight: new first call
         self.final = self.vector = None
         self.appr_cleared = self.established = self.approach_handoff = False

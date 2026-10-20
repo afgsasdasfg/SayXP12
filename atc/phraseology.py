@@ -293,6 +293,13 @@ class Phraseology:
         lead = f"turn {turn} heading" if turn else "fly heading"
         return f"{lead} {hdg:03d}", f"{lead} {heading(hdg)}"
 
+    def direct(self, fix: str) -> tuple[str, str]:
+        return self._out(f"proceed direct {fix}", f"proceed direct {letters(fix)}")
+
+    def unknown_point(self, fix: str) -> tuple[str, str]:
+        return self._out(f"unable direct {fix}, point unknown, say again",
+                         f"unable direct {letters(fix)}, point unknown, say again")
+
     def end_vectors(self, dest: str | None) -> tuple[str, str]:
         if dest:
             return f"proceed direct {dest}", f"proceed direct {letters(dest)}"
