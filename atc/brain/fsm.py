@@ -58,6 +58,8 @@ class FlightConfig:
     strict_readback: bool = False
     confirm_readback: bool = False   # say "readback correct" (real ATC is usually silent)
     arrival_gate: str | None = None
+    acf_type: str | None = None         # from the flight plan
+    filed_destination: str | None = None  # flight plan loaded (SimBrief): "flight planned route"
 
 
 @dataclass
@@ -126,7 +128,7 @@ class Brain:
 
     @property
     def acf_type(self) -> str:
-        return self.sim.acf_icao or self.called_type or "A320"
+        return self.sim.acf_icao or self.called_type or self.fc.acf_type or "A320"
 
     @staticmethod
     def _vhf(khz: int | None) -> bool:
@@ -212,6 +214,8 @@ class Brain:
         # before the first call the callsign is unknown: airline names, not the config fallback
         # (Whisper heard "Aeroflot" as "Airflot")
         who = self.phr.cs_spoken if self.identified else "Aeroflot, Rossiya, Lufthansa, Speedbird"
+        if not self.identified and self.fc.filed_destination:  # callsign from the flight plan
+            who = f"{self.phr.cs_spoken}, {who}"
         return (f"{stations}, good day, A320 {who}, radio check. {ap.icao} {ap.name}. Runway "
                 + ", ".join(e.name for r in ap.runways for e in r.ends)
                 + f". Taxi via {twys_spoken}, hold short. Squawk, QNH, flight level, cleared, readback, "
@@ -391,13 +395,18 @@ class Brain:
             from ..phraseology import letters
             d = dest.upper()
             city, choices = self._city_airports(d)
-            if len(choices) > 1:
+            if self.fc.filed_destination in choices:  # "to Moscow" with UUEE filed
+                choices = [self.fc.filed_destination]
+            if len(choices) == 1:
+                icao = choices[0]
+            elif len(choices) > 1:
                 self.dest_choices = choices
                 return [self._tx(Position.DELIVERY, self.phr.custom(
                     f"several airports in {city}, say destination ICAO"))]
-            spoken = letters(d) if len(d) <= 4 else d.title()
-            return [self._tx(Position.DELIVERY, self.phr.custom(
-                f"unable to find {d}, say again destination", f"unable to find {spoken}, say again destination"))]
+            else:
+                spoken = letters(d) if len(d) <= 4 else d.title()
+                return [self._tx(Position.DELIVERY, self.phr.custom(
+                    f"unable to find {d}, say again destination", f"unable to find {spoken}, say again destination"))]
         self.dest_choices = []
         self.fc.destination = icao
         if self.runway is None:
@@ -407,7 +416,8 @@ class Brain:
         self.assigned_alt = self.fc.initial_alt_ft
         dep_khz = self.freq_of(Position.DEPARTURE, self.dep)
         tx = self._tx(Position.DELIVERY, self.phr.ifr_clearance(
-            self.fc.destination, self.runway, self.sid, self.assigned_alt, self.squawk, dep_khz), True)
+            self.fc.destination, self.runway, self.sid, self.assigned_alt, self.squawk, dep_khz,
+            self._filed()), True)
         gnd = self.freq_of(Position.GROUND, self.dep)
 
         def ok():
@@ -857,6 +867,10 @@ class Brain:
             return "K" + code
         return None
 
+    def _filed(self) -> bool:
+        """The clearance follows the filed plan only when the pilot asked for its destination."""
+        return bool(self.fc.filed_destination) and self.fc.filed_destination == self.fc.destination
+
     def _city_airports(self, name: str) -> tuple[str, list[str]]:
         """Longest city prefix of what was said: 'NEW YORK KENNEDY' -> ('New York', [...])."""
         words = name.split() if self.index else []
@@ -941,14 +955,14 @@ class Brain:
         self.assigned_alt = self.fc.initial_alt_ft
         tx = self._tx(Position.DELIVERY, self.phr.ifr_clearance(
             self.fc.destination or "destination", self.runway, self.sid, self.assigned_alt,
-            self.squawk, self.freq_of(Position.DEPARTURE, self.dep)))
+            self.squawk, self.freq_of(Position.DEPARTURE, self.dep), self._filed()))
         self._set_phase(Phase.CLEARANCE)
         return tx
 
     def reset_for_next_flight(self) -> None:
         if self.dest is not None:
             self.dep, self.dest = self.dest, None
-        self.fc.destination = None
+        self.fc.destination = self.fc.filed_destination = None  # the plan was for the flight just flown
         self.runway = self.arr_runway = self.sid = self.squawk = None
         self.assigned_alt = None
         self._new_route(None)

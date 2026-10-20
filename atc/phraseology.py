@@ -152,10 +152,13 @@ class Phraseology:
 
     # delivery --------------------------------------------------------------
     def ifr_clearance(self, dest: str, runway_end: str, sid: str | None, init_alt: int,
-                      squawk: str, dep_khz: int | None) -> tuple[str, str]:
+                      squawk: str, dep_khz: int | None, filed: bool = False) -> tuple[str, str]:
         at, asp = self.alt(init_alt)
         route_t = f"{sid} departure" if sid else "radar vectors"
         route_s = f"{procedure(sid)} departure" if sid else "radar vectors"
+        if filed:  # route from the pilot's flight plan (SimBrief)
+            then = "then as filed" if self.region == "FAA" else "flight planned route"
+            route_t, route_s = f"{route_t}, {then}", f"{route_s}, {then}"
         t = (f"cleared to {dest} via {route_t}, runway {runway_end}, "
              f"climb {at}, squawk {squawk}")
         s = (f"cleared to {letters(dest)} via {route_s}, runway {runway(runway_end)}, "
