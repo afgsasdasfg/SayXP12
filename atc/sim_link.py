@@ -47,6 +47,9 @@ DATAREFS: dict[str, tuple[str, object]] = {
     "sim/flightmodel/engine/ENGN_running": ("engines_running", list(range(8))),
     "sim/weather/aircraft/wind_now_direction_degt": ("wind_dir_true", None),
     "sim/weather/aircraft/wind_now_speed_msc": ("wind_speed_kt", None),     # m/s
+    # lowest wind layer of the weather around us; XP12 gives this one in knots despite the name
+    "sim/weather/region/wind_direction_degt": ("sfc_wind_dir_true", 0),
+    "sim/weather/region/wind_speed_msc": ("sfc_wind_speed_kt", 0),
     "sim/weather/aircraft/qnh_pas": ("qnh_hpa", None),                      # Pa
     "sim/weather/aircraft/temperature_ambient_deg_c": ("oat_c", None),
     "sim/aircraft/view/acf_ICAO": ("acf_icao", None),                       # base64 data
@@ -60,6 +63,8 @@ PTT_COMMAND = "sim/operation/contact_atc"
 
 
 def _convert(field: str, value):
+    if field.startswith("sfc_wind") and isinstance(value, list):
+        value = value[0]
     if field in ("elevation_ft", "agl_ft"):
         return float(value) * M_TO_FT
     if field in ("groundspeed_kt", "wind_speed_kt"):
@@ -211,7 +216,7 @@ async def _demo() -> None:
               f"ias={s.ias_kt:.0f} vs={s.vs_fpm:.0f} gnd={s.on_ground} "
               f"com1={s.com1_khz} com2={s.com2_khz} tx=COM{s.tx_com} sq={s.xpdr_code:04d}/{s.xpdr_mode} "
               f"pbrake={s.parking_brake:.1f} eng={s.engines_running[:4]} "
-              f"wind={s.wind_dir_true:.0f}/{s.wind_speed_kt:.0f} qnh={s.qnh_hpa:.0f}")
+              f"wind={s.wind_dir_true:.0f}/{s.wind_speed_kt:.0f} sfc={s.surface_wind[0]:.0f}/{s.surface_wind[1]:.0f} qnh={s.qnh_hpa:.0f}")
         await asyncio.sleep(1)
     task.cancel()
 

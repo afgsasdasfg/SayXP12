@@ -57,6 +57,8 @@ class SimState:
     engines_running: list[int] = field(default_factory=list)
     wind_dir_true: float = 0.0     # direction wind blows FROM
     wind_speed_kt: float = 0.0
+    sfc_wind_dir_true: float | None = None   # lowest layer of the regional weather (None: no dataref)
+    sfc_wind_speed_kt: float | None = None
     qnh_hpa: float = 1013.25
     oat_c: float = 15.0
     acf_icao: str = ""
@@ -67,6 +69,14 @@ class SimState:
     @property
     def tx_khz(self) -> int:
         return self.com2_khz if self.tx_com == 2 else self.com1_khz
+
+    @property
+    def surface_wind(self) -> tuple[float, float]:
+        """(from true, kt) near the ground. The aircraft's own wind is the wind at its altitude:
+        at FL350 it says nothing about the runway in use."""
+        if self.on_ground or self.agl_ft < 1500 or self.sfc_wind_dir_true is None:
+            return self.wind_dir_true, self.wind_speed_kt
+        return self.sfc_wind_dir_true, self.sfc_wind_speed_kt or 0.0
 
     @property
     def any_engine_running(self) -> bool:
