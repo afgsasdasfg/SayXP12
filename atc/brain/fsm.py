@@ -452,7 +452,9 @@ class Brain:
             return [self._tx(G, self.phr.push_start(self._push_facing()))]
         if it.intent == "request_startup":
             return [self._tx(G, self.phr.startup())]
-        if it.intent == "request_taxi" or (it.intent == "check_in" and self.phase in (Phase.CLEARANCE, Phase.PUSH_START)):
+        # a bare "Ground, good day" after the clearance is not a taxi request (-> go ahead);
+        # after push and start it is
+        if it.intent == "request_taxi" or (it.intent == "check_in" and self.phase == Phase.PUSH_START):
             return self._taxi_out()
         return None
 

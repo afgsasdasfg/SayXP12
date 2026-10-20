@@ -670,3 +670,19 @@ def test_callsign_from_radio_check_on_any_frequency(ulli):
               sim_at(stand.lat, stand.lon, 127900, **wx()))
     assert out[0].text.startswith("AFL51, ") and b.fc.callsign == "AFL51"
     assert "Aeroflot five one" in b.stt_prompt()
+
+
+def test_push_and_start_whisper_variants(ulli):
+    """Live test ULLI: 'rest start' got a taxi clearance, the push readback was taken as a new request."""
+    b = Brain(FlightConfig(callsign="AFL51"), ulli)
+    b.phase = Phase.CLEARANCE
+    p = IntentParser()
+    stand = next(g for g in ulli.gates if g.name == "101A")
+    s = sim_at(stand.lat, stand.lon, 121700, **wx())
+    out = say(b, p, "Ground, good day, Aeroflot 51", s)
+    assert "go ahead" in out[0].text and b.phase == Phase.CLEARANCE
+    out = say(b, p, "Ground, good day, rest start.", s)
+    assert "taxi" not in out[0].text and b.phase == Phase.CLEARANCE
+    out = say(b, p, "Ground negative, Aeroflot 51, request push and sort.", s)
+    assert "push and start approved" in out[0].text and b.phase == Phase.PUSH_START
+    assert say(b, p, "Push and start the proof facing south, Aeroflot 51.", s) == []

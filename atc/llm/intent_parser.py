@@ -353,9 +353,11 @@ def classify_rules(text: str) -> str:
         return "request_clearance"
     if re.search(r"\bapprov", t) and "request" not in t:
         return "acknowledge"  # "push and start approved, DLH4AB" (Whisper: "approve")
-    if re.search(r"\bpush ?back\b|\brequest(?:ing)? push\b|\bpush (?:and )?start\b", t):
+    if re.search(r"\bpush\b.*\bfacing (?:north|east|south|west)", t) and "request" not in t:
+        return "acknowledge"  # "push and start the proof facing south": only ATC says the direction
+    if re.search(r"\bpush ?back\b|\brequest(?:ing)? push\b|\bpush (?:and )?(?:start|sort)\b", t):
         return "request_pushback"
-    if re.search(r"\b(request(?:ing)? start|ready (?:to|for) start)", t):
+    if re.search(r"\b((?:request(?:ing)?|rest) start|ready (?:to|for) start)", t):  # Whisper: "rest start"
         return "request_startup"
     if re.search(r"\b(request(?:ing)? taxi|ready (?:to|for) taxi|taxi to (?:the )?(?:gate|stand|parking)|request taxi)\b", t):
         return "request_taxi"
