@@ -1,6 +1,8 @@
 """Full departure at KBTV driven by synthetic SimStates and the rule-based parser."""
 import time
 
+import pytest
+
 from atc.brain.fsm import Brain, FlightConfig
 from atc.brain.monitor import Monitor
 from atc.llm.intent_parser import IntentParser
@@ -243,3 +245,202 @@ def test_frequency_nobody_listening(kbtv):
     b = Brain(FlightConfig(callsign="DLH4AB"), kbtv)
     out = say(b, IntentParser(), "request taxi", sim_at(44.47, -73.15, 130000))
     assert out == []
+
+
+# ---------------------------------------------------------------- full flight
+# One flight from the first radio call to the stand, as far as the rules go today:
+# KBTV -> KBTV (the only airport in the fixtures), so arrival frequencies are known.
+# Steps that are not implemented yet are separate xfail tests below.
+
+DL, GND, TWR, APP, CTR = 119150, 126300, 118300, 121100, 127900
+VACATE = (44.46626277, -73.14408472)  # taxiway node beside the 33 end of runway 15/33
+
+
+class KbtvIndex:
+    """AptIndex stand-in: destination KBTV loads the fixture airport."""
+
+    def __init__(self, ap):
+        self.ap = ap
+        self.entries = {"KBTV": ("x", 0, 44.471955, -73.153277)}
+
+    def load(self, icao):
+        if icao != "KBTV":
+            raise KeyError(icao)
+        return self.ap
+
+
+def air(lat, lon, khz, alt, **kw):
+    return sim_at(lat, lon, khz, on_ground=False, agl_ft=alt - 333, altitude_ft=alt, **kw)
+
+
+def ticks(m, s, n=4):
+    out = []
+    for _ in range(n):
+        out += m.tick(s)
+    return out
+
+
+def test_full_flight_radio_check_to_stand(kbtv):
+    b = Brain(FlightConfig(callsign="DLH4AB", destination="KBTV"), kbtv, index=KbtvIndex(kbtv))
+    m = Monitor(b)
+    p = IntentParser()
+    gate = next(g for g in kbtv.gates if g.name == "1")
+    at_gate = lambda khz, **kw: sim_at(gate.lat, gate.lon, khz, **kw)  # noqa: E731
+
+    # --- radio check and initial call (Delivery)
+    out = say(b, p, "Burlington Delivery, Lufthansa four alpha bravo, radio check", at_gate(DL))
+    assert "read you five" in out[0].text
+    out = say(b, p, "Burlington Delivery, Lufthansa four alpha bravo, good day", at_gate(DL))
+    assert "go ahead" in out[0].text and b.phase == Phase.PARKED
+
+    # --- IFR clearance
+    out = say(b, p, "DLH4AB request IFR clearance to KBTV", at_gate(DL))
+    assert out[0].position == Position.DELIVERY and "runway 15" in out[0].text
+    out = say(b, p, f"cleared KBTV runway 15 climb 5000 squawk {b.squawk} DLH4AB", at_gate(DL))
+    assert "contact ground 126.3" in out[0].text and b.phase == Phase.CLEARANCE
+    assert say(b, p, "126.3 for push and start, DLH4AB", at_gate(DL)) == []
+
+    # --- push and start, taxi (Ground)
+    out = say(b, p, "Burlington Ground, DLH4AB, stand 1, request push and start", at_gate(GND))
+    assert "push and start approved" in out[0].text and b.phase == Phase.PUSH_START
+    assert say(b, p, "push and start approved, DLH4AB", at_gate(GND)) == []
+    out = say(b, p, "DLH4AB request taxi", at_gate(GND))
+    assert "hold short runway 15" in out[0].text and b.phase == Phase.TAXI_OUT
+    assert say(b, p, "taxi via G M hold short runway 15 DLH4AB", at_gate(GND)) == []
+    hold = kbtv.nodes[b.route.nodes[-1]]
+    out = m.tick(sim_at(hold.lat, hold.lon, GND, groundspeed_kt=2))
+    assert any("contact tower 118.3" in t.text for t in out) and b.phase == Phase.HOLDING
+    assert say(b, p, "tower 118.3, DLH4AB", sim_at(hold.lat, hold.lon, GND)) == []
+
+    # --- takeoff (Tower)
+    out = say(b, p, "Burlington Tower, DLH4AB holding short 15 ready for departure", sim_at(hold.lat, hold.lon, TWR))
+    assert "cleared for takeoff" in out[0].text and b.phase == Phase.TAKEOFF
+    assert say(b, p, "cleared for takeoff runway 15 DLH4AB", sim_at(hold.lat, hold.lon, TWR)) == []
+    out = ticks(m, air(44.476, -73.158, TWR, 1800, vs_fpm=2000))
+    assert any("contact departure 121.1" in t.text for t in out) and b.phase == Phase.DEPARTURE
+    assert say(b, p, "departure 121.1, DLH4AB", air(44.476, -73.158, TWR, 1800)) == []
+
+    # --- Departure: radar contact, vectors (no SID), climb FL100
+    s = air(44.46, -73.14, APP, 2300, heading_true=131, heading_mag=145)
+    out = say(b, p, "Burlington Departure, DLH4AB passing 2300 climbing 5000", s)
+    assert "radar contact" in out[0].text and "climb FL100" in out[0].text and b.assigned_hdg is not None
+    hdg = b.assigned_hdg
+    assert say(b, p, f"heading {hdg}, climb flight level 100, DLH4AB", s) == [] and b.pending is None
+
+    # --- Center: handoff above 10000, cruise level, end of vectors
+    out = ticks(m, air(44.3, -72.9, APP, 10100, heading_mag=hdg), 1)
+    assert any("contact center 127.9" in t.text for t in out) and b.phase == Phase.ENROUTE
+    assert say(b, p, "center 127.9, DLH4AB", air(44.3, -72.9, APP, 10100)) == []
+    out = say(b, p, "Center, DLH4AB passing flight level 105", air(44.3, -72.9, CTR, 10500))
+    assert "climb FL350" in out[0].text and "proceed direct KBTV" in out[0].text and b.assigned_hdg is None
+    assert say(b, p, "climb flight level 350, direct KBTV, DLH4AB", air(44.3, -72.9, CTR, 10500)) == []
+    ticks(m, air(44.0, -72.5, CTR, 35000))
+    assert b.alt_captured
+
+    # --- descent (pilot request; ATC-initiated TOD is an xfail below)
+    out = say(b, p, "Center, DLH4AB request descent", air(44.2, -72.8, CTR, 35000))
+    assert "descend FL100" in out[0].text and b.phase == Phase.ARRIVAL and b.dest is kbtv
+    assert say(b, p, "descend flight level 100, DLH4AB", air(44.2, -72.8, CTR, 35000)) == []
+
+    # --- approach clearance: straight to ILS (vectors to final are an xfail below)
+    out = say(b, p, "Burlington Approach, DLH4AB, flight level 100, request ILS approach",
+              air(44.6, -73.3, APP, 10000))
+    assert "cleared ILS approach runway 15" in out[0].text and "contact tower 118.3 when established" in out[0].text
+    assert b.phase == Phase.APPROACH and b.assigned_alt == 3000  # field 333 ft + 2500, rounded to 500
+    assert say(b, p, "descend 3000, cleared ILS approach runway 15, DLH4AB", air(44.6, -73.3, APP, 10000)) == []
+
+    # --- landing clearance (Tower)
+    out = say(b, p, "Burlington Tower, DLH4AB established ILS runway 15", air(44.50, -73.20, TWR, 2000))
+    assert "cleared to land" in out[0].text and "runway 15" in out[0].text and b.phase == Phase.LANDING
+    assert say(b, p, "cleared to land runway 15, DLH4AB", air(44.50, -73.20, TWR, 2000)) == []
+
+    # --- touchdown, rollout, vacate -> Ground
+    ticks(m, sim_at(44.478, -73.162, TWR, groundspeed_kt=120))
+    assert not b.tracker.airborne and b.phase == Phase.LANDING
+    out = ticks(m, sim_at(*VACATE, TWR, groundspeed_kt=15), 1)
+    assert any("contact ground 126.3" in t.text for t in out) and b.phase == Phase.TAXI_IN
+    assert say(b, p, "ground 126.3, DLH4AB", sim_at(*VACATE, TWR)) == []
+
+    # --- taxi to the stand
+    out = say(b, p, "Burlington Ground, DLH4AB vacated runway 15, request taxi to stand", sim_at(*VACATE, GND))
+    assert "taxi to stand" in out[0].text and b.gate
+    if b.pending:  # the route crosses a runway: hold short readback
+        assert say(b, p, f"hold short runway {b.pending.expected['hold_short']}, DLH4AB", sim_at(*VACATE, GND)) == []
+    stand = next(g for g in kbtv.gates if g.name == b.gate)
+
+    # --- engines off with the brake set at the stand -> ready for the next flight
+    ticks(m, sim_at(stand.lat, stand.lon, GND, parking_brake=1.0, engines_running=[0, 0]), 1)
+    assert b.phase == Phase.PARKED and b.dep is kbtv and b.squawk is None
+
+
+def test_no_readback_reminder_while_pilot_talks(kbtv):
+    """Live bug: 'how do you read' came in the middle of the pilot's readback (PTT + STT time)."""
+    b = Brain(FlightConfig(callsign="DLH4AB", destination="KBOS"), kbtv)
+    m = Monitor(b)
+    gate = kbtv.gates[0]
+    s = sim_at(gate.lat, gate.lon, DL)
+    say(b, IntentParser(), "delivery DLH4AB request clearance to KBOS", s)
+    b.pending.t = time.time() - 11
+    b.last_pilot_t = time.time()  # the pilot has spoken since the clearance (garbled readback)
+    assert m.tick(s) == []
+
+
+# ------------------------------------------------- not implemented yet (xfail)
+# Not strict: other threads are building some of these; an XPASS means the marker can go.
+
+def _arrival_brain(kbtv, alt=10000):
+    b = Brain(FlightConfig(callsign="DLH4AB", destination="KBTV"), kbtv, index=KbtvIndex(kbtv))
+    b.phase, b.runway, b.squawk, b.assigned_alt = Phase.ARRIVAL, "15", "5304", alt
+    b._load_dest()
+    return b, Monitor(b)
+
+
+@pytest.mark.xfail(reason="Center never hands off to Approach; on the shared 121.1 Center answers")
+def test_center_hands_off_to_approach(kbtv):
+    b, m = _arrival_brain(kbtv)
+    p = IntentParser()
+    # ~25 NM north of KBTV, level 10000, descending into the terminal area
+    out = ticks(m, air(44.89, -73.15, CTR, 10000, vs_fpm=-1500))
+    assert any("contact approach 121.1" in t.text for t in out)
+    say(b, p, "approach 121.1, DLH4AB", air(44.89, -73.15, CTR, 10000))
+    out = say(b, p, "Burlington Approach, DLH4AB, descending FL100", air(44.88, -73.15, APP, 10000))
+    assert out[0].position == Position.APPROACH
+
+
+@pytest.mark.xfail(reason="ATC-initiated descent at top of descent is not implemented (PLAN stage 2)")
+def test_center_starts_descent_at_tod(kbtv):
+    b, m = _arrival_brain(kbtv, alt=35000)
+    b.phase = Phase.ENROUTE
+    b.alt_captured = True
+    # FL350, ~100 NM out: past the 3:1 top of descent (~105 NM) -> Center calls first
+    out = ticks(m, air(46.13, -73.15, CTR, 35000))
+    assert any("descend" in t.text for t in out) and b.assigned_alt < 35000
+
+
+@pytest.mark.xfail(reason="Approach clears ILS straight away, no vectors to final yet")
+def test_approach_vectors_to_ils(kbtv):
+    b, m = _arrival_brain(kbtv)
+    p = IntentParser()
+    out = say(b, p, "Burlington Approach, DLH4AB, FL100, request ILS approach",
+              air(44.89, -73.15, APP, 10000, heading_mag=180, heading_true=166))
+    assert "heading" in out[0].text and "cleared ILS" not in out[0].text
+    assert b.assigned_hdg is not None
+
+
+@pytest.mark.xfail(reason="'runway vacated' without 'request taxi' is not understood ('say again')")
+def test_ground_understands_runway_vacated(kbtv):
+    b, m = _arrival_brain(kbtv)
+    b.phase = Phase.TAXI_IN
+    out = say(b, IntentParser(), "Burlington Ground, Lufthansa four alpha bravo, runway vacated",
+              sim_at(*VACATE, GND))
+    assert "taxi to stand" in out[0].text
+
+
+@pytest.mark.xfail(reason="callsign, type and stand are not taken from the first call yet (VATSIM style)")
+def test_vatsim_first_call_sets_callsign_and_stand(kbtv):
+    b = Brain(FlightConfig(), kbtv)  # config callsign N123AB is only a fallback
+    p = IntentParser()
+    out = say(b, p, "Burlington Delivery, good day, A320 Lufthansa four alpha bravo on stand 1, "
+                    "request IFR clearance to KBOS", sim_at(44.47, -73.15, DL))
+    assert out[0].text.startswith("DLH4AB")
+    assert b.gate == "1"
