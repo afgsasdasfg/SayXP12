@@ -292,3 +292,30 @@ def test_unknown_city_is_rejected(kbtv, city_index):
               sim_at(44.47, -73.15, 119150))
     assert out[0].text == "DLH4AB, unable to find ATLANTIS, say again destination"
     assert "Atlantis" in out[0].spoken
+
+
+def test_ulli_first_call_to_moscow_asks_icao(ulli, city_index):
+    """Test flight ULLI -> UUEE: Moscow has several airports, so Delivery asks for the ICAO."""
+    b = Brain(FlightConfig(callsign="N123AB"), ulli, index=city_index)
+    p = IntentParser()
+    s = sim_at(59.8005, 30.2700, 132200, acf_icao="A20N")
+    out = say(b, p, "Pulkovo Delivery, good day, A20N Aeroflot 1 2 3 4 on stand 12, information alpha, "
+                    "request IFR clearance to Moscow", s)
+    assert out[0].text == "AFL1234, several airports in Moscow, say destination ICAO"
+    assert out[0].spoken.startswith("Aeroflot one two three four")
+    assert b.fc.callsign == "AFL1234" and b.called_type == "A20N" and b.stand == "12"
+    out = say(b, p, "uniform uniform echo echo, Aeroflot 1234", s)
+    assert out[0].text.startswith("AFL1234, cleared to UUEE") and b.fc.destination == "UUEE"
+
+
+def test_ulli_icao_and_unique_city(ulli, city_index):
+    p = IntentParser()
+    s = sim_at(59.8005, 30.2700, 132200)
+    b = Brain(FlightConfig(callsign="N123AB"), ulli, index=city_index)
+    out = say(b, p, "Pulkovo Delivery, good day, A20N DLH4AB on stand 14, request IFR clearance to UUEE", s)
+    assert out[0].text.startswith("DLH4AB, cleared to UUEE")
+    # the way back: St. Petersburg has one airport, whichever way it is spelled
+    for said in ("Saint Petersburg", "St. Petersburg"):
+        b = Brain(FlightConfig(callsign="DLH4AB"), ulli, index=city_index)
+        out = say(b, p, f"Delivery, good day, A20N DLH4AB on stand 12, request IFR clearance to {said}", s)
+        assert out[0].text.startswith("DLH4AB, cleared to ULLI"), said

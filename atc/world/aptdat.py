@@ -325,15 +325,21 @@ class AptIndex:
         self.cache_file.write_text(json.dumps({"version": self.CACHE_VERSION, "signature": sig,
                                                "entries": entries, "info": info}))
 
+    @staticmethod
+    def city_key(name: str) -> str:
+        """'St. Petersburg' / 'Saint-Petersburg' / 'saint petersburg' -> 'saint petersburg'."""
+        words = name.lower().replace("-", " ").replace(".", " ").split()
+        return " ".join("saint" if w == "st" else w for w in words)
+
     def _build_cities(self, info: dict[str, list]) -> None:
         self.cities = {}
         for icao, (city, land, towered) in info.items():
             if city and land:  # seaplane bases and heliports are not IFR destinations
-                self.cities.setdefault(city.lower(), []).append((icao, towered))
+                self.cities.setdefault(self.city_key(city), []).append((icao, towered))
 
     def in_city(self, name: str) -> list[str]:
         """Airports of a city: 'Boston' -> ['KBOS']. Several -> only the towered ones, if any."""
-        found = self.cities.get(name.lower().strip(), [])
+        found = self.cities.get(self.city_key(name), [])
         towered = [icao for icao, t in found if t]
         return sorted(towered if len(found) > 1 and towered else [icao for icao, _ in found])
 

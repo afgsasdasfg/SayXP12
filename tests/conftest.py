@@ -39,6 +39,26 @@ CITY_APT_DAT = """I
 1302 city New York
 1302 datum_lat 40.70
 1302 datum_lon -73.90
+1 78 0 0 ULLI Pulkovo
+1302 city St. Petersburg
+1302 datum_lat 59.80
+1302 datum_lon 30.26
+1054 118100 PULKOVO TOWER
+1 622 0 0 UUEE Sheremetyevo Intl
+1302 city Moscow
+1302 datum_lat 55.97
+1302 datum_lon 37.41
+1054 131500 SHEREMETYEVO TOWER
+1 588 0 0 UUDD Domodedovo Intl
+1302 city Moscow
+1302 datum_lat 55.41
+1302 datum_lon 37.90
+1054 119700 DOMODEDOVO TOWER
+1 686 0 0 UUWW Vnukovo Intl
+1302 city Moscow
+1302 datum_lat 55.60
+1302 datum_lon 37.27
+1054 119300 VNUKOVO TOWER
 1 333 0 0 KBTV Burlington Intl
 1302 city Burlington
 1302 datum_lat 44.47
@@ -56,3 +76,25 @@ def city_index(tmp_path):
     d.mkdir(parents=True)
     (d / "apt.dat").write_text(CITY_APT_DAT)
     return AptIndex(tmp_path / "xp", cache_dir=tmp_path / "cache")
+
+
+# Pulkovo, reduced: the two runways, frequencies and a few stands (real names and positions are
+# not needed for Delivery; enough to issue a clearance on the ULLI -> UUEE test flight)
+ULLI_LINES = [
+    "1 78 0 0 ULLI Pulkovo",
+    "1302 city St. Petersburg",
+    "100 60.00 1 0 0.25 0 0 0 10L 59.8064 30.2433 0 0 3 0 0 0 28R 59.7970 30.3058 0 0 3 0 0 0",
+    "100 60.00 1 0 0.25 0 0 0 10R 59.8023 30.2297 0 0 3 0 0 0 28L 59.7906 30.3046 0 0 3 0 0 0",
+    "1300 59.8005 30.2700 280 gate jets|heavy 12",
+    "1300 59.8008 30.2710 280 gate jets|heavy 14",
+    "1052 132200 PULKOVO DELIVERY",
+    "1053 121700 PULKOVO GROUND",
+    "1054 118100 PULKOVO TOWER",
+    "1056 125200 PULKOVO DEPARTURE",
+    "99",
+]
+
+
+@pytest.fixture
+def ulli():
+    return parse_airport_lines(ULLI_LINES)

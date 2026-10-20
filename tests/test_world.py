@@ -93,6 +93,8 @@ def test_airports_by_city(city_index, tmp_path):
     assert city_index.in_city("Boston") == ["KBOS"]          # heliport does not count
     assert city_index.in_city("new york") == ["KJFK", "KLGA"]  # untowered strip dropped
     assert city_index.in_city("Burlington") == ["KBTV"]
+    assert city_index.in_city("Moscow") == ["UUDD", "UUEE", "UUWW"]
+    assert city_index.in_city("Saint-Petersburg") == ["ULLI"]
     assert city_index.in_city("Atlantis") == []
     from atc.world.aptdat import AptIndex
     cached = AptIndex(tmp_path / "xp", cache_dir=tmp_path / "cache")  # from the json cache
